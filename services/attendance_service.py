@@ -1,11 +1,6 @@
 """
 services/attendance_service.py
 Logic nghiệp vụ điểm danh.
-
-Thay đổi so với phiên bản cũ:
-  • end_session(): bỏ session.total_students (cột không tồn tại trong schema)
-  • create_session(): bỏ created_by (SessionRepo.create_session() không nhận param này)
-  • NÂNG CẤP: Ghi dữ liệu DB bất đồng bộ bằng luồng (Thread) chạy ngầm để tránh giật lag camera.
 """
 import time
 import threading

@@ -80,7 +80,6 @@ CREATE TABLE Cameras (
 GO
 
 -- AttendanceSessions
--- start_time NULL = chua bat dau, se UPDATE khi nhan "Bat dau"
 CREATE TABLE AttendanceSessions (
     session_id    INT           IDENTITY(1,1) PRIMARY KEY,
     session_code  NVARCHAR(50)  NOT NULL UNIQUE,
@@ -147,7 +146,6 @@ END
 GO
 
 -- SP2: Ghi nhan diem danh
--- Python goi: call_procedure("sp_RecordAttendance", (session_id, student_id, score))
 CREATE OR ALTER PROCEDURE sp_RecordAttendance
     @session_id INT,
     @student_id INT,
@@ -224,7 +222,6 @@ VALUES
 GO
 
 -- Students (10 hoc vien - 2 lop dau)
--- Dung SELECT lay class_id theo class_code, tranh hardcode
 INSERT INTO Students (student_code, full_name, gender, date_of_birth, phone, email, class_id)
 SELECT col, ten, gt, ngay, sdt, mail, (SELECT class_id FROM Classes WHERE class_code = lop)
 FROM (VALUES
@@ -276,29 +273,28 @@ JOIN (VALUES
 GO
 
 -- AttendanceRecords
--- Dung JOIN 2 bang theo code, khong bao gio NULL
 INSERT INTO AttendanceRecords (session_id, student_id, status, check_in_time, recognition_score)
 SELECT se.session_id, st.student_id, r.tt, r.gio, r.diem
 FROM (VALUES
-    -- Buoi 1: HV001-004 co mat, HV005 vang
+    -- Buoi 1: 
     (N'CNTT01-20260308-S1', N'HV001', N'PRESENT', CAST('2026-03-08 08:02:11' AS DATETIME2), 0.943),
     (N'CNTT01-20260308-S1', N'HV002', N'PRESENT', CAST('2026-03-08 08:03:45' AS DATETIME2), 0.921),
     (N'CNTT01-20260308-S1', N'HV003', N'PRESENT', CAST('2026-03-08 08:01:30' AS DATETIME2), 0.967),
     (N'CNTT01-20260308-S1', N'HV004', N'PRESENT', CAST('2026-03-08 08:05:20' AS DATETIME2), 0.889),
     (N'CNTT01-20260308-S1', N'HV005', N'ABSENT',  NULL,                                      NULL),
-    -- Buoi 2: tat ca co mat
+    -- Buoi 2: 
     (N'CNTT01-20260309-S2', N'HV001', N'PRESENT', CAST('2026-03-09 08:01:05' AS DATETIME2), 0.956),
     (N'CNTT01-20260309-S2', N'HV002', N'PRESENT', CAST('2026-03-09 08:02:33' AS DATETIME2), 0.934),
     (N'CNTT01-20260309-S2', N'HV003', N'PRESENT', CAST('2026-03-09 08:00:58' AS DATETIME2), 0.978),
     (N'CNTT01-20260309-S2', N'HV004', N'PRESENT', CAST('2026-03-09 08:04:12' AS DATETIME2), 0.901),
     (N'CNTT01-20260309-S2', N'HV005', N'PRESENT', CAST('2026-03-09 08:03:47' AS DATETIME2), 0.918),
-    -- Buoi 3: HV001/003/005 co mat, HV002/004 vang
+    -- Buoi 3: 
     (N'CNTT01-20260310-S3', N'HV001', N'PRESENT', CAST('2026-03-10 08:00:45' AS DATETIME2), 0.961),
     (N'CNTT01-20260310-S3', N'HV002', N'ABSENT',  NULL,                                      NULL),
     (N'CNTT01-20260310-S3', N'HV003', N'PRESENT', CAST('2026-03-10 08:02:18' AS DATETIME2), 0.947),
     (N'CNTT01-20260310-S3', N'HV004', N'ABSENT',  NULL,                                      NULL),
     (N'CNTT01-20260310-S3', N'HV005', N'PRESENT', CAST('2026-03-10 08:01:33' AS DATETIME2), 0.925),
-    -- Buoi 4 lop 2: tat ca co mat
+    -- Buoi 4 
     (N'CNTT02-20260309-S1', N'HV006', N'PRESENT', CAST('2026-03-09 13:01:22' AS DATETIME2), 0.932),
     (N'CNTT02-20260309-S1', N'HV007', N'PRESENT', CAST('2026-03-09 13:00:38' AS DATETIME2), 0.955),
     (N'CNTT02-20260309-S1', N'HV008', N'PRESENT', CAST('2026-03-09 13:02:45' AS DATETIME2), 0.912),

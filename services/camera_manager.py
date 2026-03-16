@@ -1,14 +1,5 @@
 """
 services/camera_manager.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Quản lý camera — hỗ trợ:
-  • Webcam USB   : source = 0, 1, 2...
-  • Camera IP LAN: source = "rtsp://admin:pass@192.168.1.x:554/..."
-  • Tự động kết nối lại khi mất tín hiệu
-  • Nhiều camera chạy song song (mỗi camera 1 thread)
-  • Cung cấp frame mới nhất cho UI thread (không block)
-  • NÂNG CẤP: Thread-safe tối ưu cho RTSP, giảm tối đa độ trễ buffer.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import cv2
 import time

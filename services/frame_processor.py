@@ -1,6 +1,5 @@
 """
 services/frame_processor.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Kết nối Camera → AI Engine → Attendance Service
 
 Chạy trong QThread riêng (để UI không bị freeze).
@@ -9,7 +8,6 @@ Liên tục:
   2. Đưa qua FaceEngine để nhận diện
   3. Phát signal lên UI để hiển thị
   4. Gửi kết quả đến AttendanceService để ghi DB
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import time
 import threading

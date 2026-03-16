@@ -1,10 +1,6 @@
 """
 services/enrollment_service.py
 Đăng ký khuôn mặt học viên.
-
-Thay đổi so với phiên bản cũ:
-  • create_student(): bỏ param photo_path (cột không tồn tại trong schema)
-  • finish_enrollment(): bỏ photo_count, avg_det_score khi gọi save_embedding()
 """
 import time
 import threading

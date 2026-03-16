@@ -1,7 +1,5 @@
 """
 ui/pages/dashboard_page.py
-Trang Dashboard — tổng quan hệ thống.
-Cải tiến: Thông tin thực tế, quét cấu hình Hardware, 4 thẻ quản lý chuẩn xác.
 """
 import subprocess
 import platform

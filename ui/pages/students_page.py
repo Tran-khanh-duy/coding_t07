@@ -1,9 +1,5 @@
 """
 ui/pages/students_page.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Màn hình danh sách học viên — Quản lý, tìm kiếm và điều hướng đăng ký.
-Nâng cấp: Giao diện Table hiện đại, Badge trạng thái, Thao tác nhanh.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 

@@ -1,6 +1,5 @@
 """
 ui/widgets/camera_preview.py
-Widget hiển thị live camera feed với overlay HUD (Heads-Up Display) hiện đại.
 """
 import numpy as np
 import cv2

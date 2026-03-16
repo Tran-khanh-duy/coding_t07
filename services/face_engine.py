@@ -1,7 +1,5 @@
 """
 services/face_engine.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Trái tim của hệ thống — Pipeline nhận dạng khuôn mặt
 
 Luồng xử lý 1 frame:
   Frame 720p/1080p
@@ -10,7 +8,6 @@ Luồng xử lý 1 frame:
     → ArcFace: Trích xuất vector 512 chiều
     → Batch Cosine Similarity: So sánh song song toàn bộ khuôn mặt bằng Ma Trận (Cực nhanh)
     → Kết quả: (student_id, name, score) trong vài milliseconds
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import time
 import threading

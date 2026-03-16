@@ -1,12 +1,6 @@
 """
 services/report_service.py
 Xuất báo cáo điểm danh — Excel + PDF.
-
-Thay đổi so với phiên bản cũ:
-  • load_report_data(): bỏ getattr(session, 'teacher_name')
-    → Classes không join teacher_name qua AttendanceSessions
-    → Dùng class_repo.get_by_id() để lấy teacher_name riêng
-  • total_students tính từ len(records) thay vì session.total_students
 """
 from pathlib import Path
 from datetime import datetime

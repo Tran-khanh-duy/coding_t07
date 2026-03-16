@@ -1,6 +1,6 @@
 """
 ui/pages/reports_page.py
-Giao diện quản lý báo cáo và chi tiết buổi học (Đã nâng cấp)
+Giao diện quản lý báo cáo và chi tiết buổi học
 """
 import os
 import subprocess

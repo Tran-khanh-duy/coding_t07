@@ -1,21 +1,5 @@
 """
 ui/pages/attendance_page.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Màn hình Điểm Danh Realtime
-
-Layout:
-  ┌──────────────────────────┬────────────────────┐
-  │  Live Camera (lớn)       │  Panel điều khiển  │
-  │  + bounding box          │  - Chọn lớp/môn    │
-  │  + tên + score           │  - Chọn camera     │
-  │                          │  - [Bắt đầu]       │
-  │                          │  - Đồng hồ         │
-  │                          ├────────────────────┤
-  │                          │  Danh sách có mặt  │
-  │                          │  (scroll realtime) │
-  │                          │  - Ảnh + tên + giờ │
-  └──────────────────────────┴────────────────────┘
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import numpy as np
 from datetime import datetime, date

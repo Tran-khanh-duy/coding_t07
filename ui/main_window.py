@@ -1,9 +1,5 @@
 """
 ui/main_window.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Cửa sổ chính — Điều phối hệ thống điểm danh Face Recognition.
-Khắc phục lỗi ImportError và tối ưu khởi động.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import sys
 from datetime import datetime

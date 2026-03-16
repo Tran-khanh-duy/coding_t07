@@ -4,8 +4,8 @@ main.py
 Entry point — chạy ứng dụng FaceAttend
 
 Cách khởi động:
-    cd C:\face_attendance
-    py -3.11 main.py
+    cd \face_attendance
+    py main.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import sys

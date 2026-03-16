@@ -1,9 +1,6 @@
 """
 ui/styles/theme.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Light theme hiện đại — Windows 11 Fluent Design style.
-Cải tiến: Chống cắt chữ, tối ưu hiển thị nút bấm/ô nhập liệu.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 from PyQt6.QtGui import QColor, QPalette
 
