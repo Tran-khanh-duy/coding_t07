@@ -26,3 +26,6 @@ env/
 # Bỏ qua file log
 logs/
 *.log
+
+models/
+*.zip

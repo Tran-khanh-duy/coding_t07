@@ -5,9 +5,11 @@ Logic nghiệp vụ điểm danh.
 Thay đổi so với phiên bản cũ:
   • end_session(): bỏ session.total_students (cột không tồn tại trong schema)
   • create_session(): bỏ created_by (SessionRepo.create_session() không nhận param này)
+  • NÂNG CẤP: Ghi dữ liệu DB bất đồng bộ bằng luồng (Thread) chạy ngầm để tránh giật lag camera.
 """
 import time
 import threading
+import queue
 from datetime import datetime, date
 from pathlib import Path
 from typing import Optional, Callable
@@ -21,7 +23,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import ai_config, app_config
-from database.repositories import session_repo, record_repo, student_repo
+from database.repositories import session_repo, record_repo
 from database.models import AttendanceSession
 from services.face_engine import RecognitionResult
 
@@ -68,6 +70,51 @@ class AttendanceService:
             "session_start":    None,
         }
 
+        # NÂNG CẤP: Khởi tạo luồng chạy ngầm để ghi Database
+        self._db_queue = queue.Queue()
+        self._stop_worker = threading.Event()
+        self._worker_thread = threading.Thread(target=self._db_worker, name="DB-Worker", daemon=True)
+        self._worker_thread.start()
+
+    def _db_worker(self):
+        """Luồng chạy ngầm: Lấy dữ liệu từ hàng đợi và ghi vào SQL Server / Ổ cứng"""
+        while not self._stop_worker.is_set():
+            try:
+                task = self._db_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            
+            event, frame_crop, camera_id = task
+            snapshot_path = None
+            
+            # 1. Lưu ảnh ra ổ cứng (Async)
+            if app_config.save_snapshots and frame_crop is not None:
+                try:
+                    ts = event.check_in_time.strftime("%H%M%S")
+                    fname = f"{event.student_code}_{ts}_cam{camera_id}.jpg"
+                    path = app_config.snapshot_dir / fname
+                    cv2.imwrite(str(path), frame_crop)
+                    snapshot_path = str(path)
+                    event.snapshot_path = snapshot_path
+                except Exception as e:
+                    logger.error(f"Lỗi lưu snapshot ngầm: {e}")
+
+            # 2. Ghi vào SQL Server (Async)
+            success = record_repo.record_attendance(
+                session_id=event.session_id,
+                student_id=event.student_id,
+                recognition_score=event.similarity,
+                snapshot_path=snapshot_path,
+                camera_id=camera_id,
+            )
+
+            if success:
+                self._stats["total_recorded"] += 1
+            else:
+                logger.error(f"Ghi DB thất bại cho student_id={event.student_id}")
+
+            self._db_queue.task_done()
+
     # ─── Quản lý Session ──────────────────────
 
     def create_session(
@@ -75,7 +122,6 @@ class AttendanceService:
         class_id:     int,
         subject_name: str,
         session_date: date = None,
-        # created_by đã bỏ — SessionRepo.create_session() không có param này
     ) -> int:
         """Tạo buổi điểm danh mới, tạo sẵn records ABSENT cho toàn bộ lớp."""
         sid = session_repo.create_session(
@@ -118,13 +164,16 @@ class AttendanceService:
             logger.warning("Không có buổi điểm danh nào đang chạy")
             return None
 
+        # Đợi các task ghi DB chạy ngầm hoàn tất trước khi đóng session
+        logger.info("Đang chờ các bản ghi DB cuối cùng lưu xong...")
+        self._db_queue.join()
+
         session_repo.end_session(self._session_id)
         session = session_repo.get_by_id(self._session_id)
         self._active     = False
         self._session_id = None
         self._session    = None
 
-        # Dùng present_count / absent_count — schema mới không có total_students
         logger.success(
             f"⏹ Kết thúc điểm danh | "
             f"Có mặt: {session.present_count} | "
@@ -148,6 +197,7 @@ class AttendanceService:
         self._stats["total_recognized"] += 1
         student_id = result.student_id
 
+        # Kiểm tra cooldown
         remaining = self._get_cooldown_remaining(student_id)
         if remaining > 0:
             self._stats["total_duplicate"] += 1
@@ -161,24 +211,7 @@ class AttendanceService:
                     pass
             return None
 
-        snapshot_path = None
-        if app_config.save_snapshots and frame is not None:
-            snapshot_path = self._save_snapshot(frame, result, camera_id)
-
-        success = record_repo.record_attendance(
-            session_id=self._session_id,
-            student_id=student_id,
-            recognition_score=result.similarity,
-            snapshot_path=snapshot_path,
-            camera_id=camera_id,
-        )
-
-        if not success:
-            logger.error(f"Ghi DB thất bại cho student_id={student_id}")
-            return None
-
         self._set_cooldown(student_id)
-        self._stats["total_recorded"] += 1
 
         event = AttendanceEvent(
             student_id=student_id,
@@ -187,9 +220,25 @@ class AttendanceService:
             class_id=result.class_id,
             check_in_time=datetime.now(),
             similarity=result.similarity,
-            snapshot_path=snapshot_path,
+            snapshot_path=None,
             session_id=self._session_id,
         )
+
+        # Cắt ảnh trên RAM (việc ghi đĩa sẽ do _db_worker thực hiện)
+        face_crop = None
+        if app_config.save_snapshots and frame is not None:
+            try:
+                x1, y1, x2, y2 = result.bbox
+                pad = 20
+                h, w = frame.shape[:2]
+                x1 = max(0, x1 - pad);  y1 = max(0, y1 - pad)
+                x2 = min(w, x2 + pad);  y2 = min(h, y2 + pad)
+                face_crop = frame[y1:y2, x1:x2].copy()
+            except Exception as e:
+                logger.error(f"Lỗi khi cắt ảnh: {e}")
+
+        # Đẩy vào queue để luồng phụ lưu DB và ảnh
+        self._db_queue.put((event, face_crop, camera_id))
 
         logger.success(
             f"✅ ĐIỂM DANH: [{result.student_code}] {result.full_name} "
@@ -238,30 +287,6 @@ class AttendanceService:
         logger.info(
             f"Reset cooldown: {'tất cả' if not student_id else f'student {student_id}'}"
         )
-
-    # ─── Snapshot ─────────────────────────────
-
-    def _save_snapshot(
-        self,
-        frame:     np.ndarray,
-        result:    RecognitionResult,
-        camera_id: int,
-    ) -> Optional[str]:
-        try:
-            x1, y1, x2, y2 = result.bbox
-            pad = 20
-            h, w = frame.shape[:2]
-            x1 = max(0, x1 - pad);  y1 = max(0, y1 - pad)
-            x2 = min(w, x2 + pad);  y2 = min(h, y2 + pad)
-            face_crop = frame[y1:y2, x1:x2]
-            ts    = datetime.now().strftime("%H%M%S")
-            fname = f"{result.student_code}_{ts}_cam{camera_id}.jpg"
-            path  = app_config.snapshot_dir / fname
-            cv2.imwrite(str(path), face_crop)
-            return str(path)
-        except Exception as e:
-            logger.error(f"Lỗi lưu snapshot: {e}")
-            return None
 
     # ─── Truy vấn trạng thái ──────────────────
 

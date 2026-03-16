@@ -2,7 +2,7 @@
 ui/styles/theme.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Light theme hiện đại — Windows 11 Fluent Design style.
-Clean, professional, đọc rõ ban ngày.
+Cải tiến: Chống cắt chữ, tối ưu hiển thị nút bấm/ô nhập liệu.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 from PyQt6.QtGui import QColor, QPalette
@@ -49,7 +49,7 @@ QWidget {{
     background-color: {Colors.BG_DARK};
     color: {Colors.TEXT};
     font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif;
-    font-size: 13px;
+    font-size: 14px;
 }}
 QMainWindow {{
     background-color: {Colors.BG_DARK};
@@ -58,20 +58,20 @@ QMainWindow {{
 /* ── Scrollbar ── */
 QScrollBar:vertical {{
     background: transparent;
-    width: 7px;
+    width: 8px;
     border-radius: 4px;
     margin: 2px 1px;
 }}
 QScrollBar::handle:vertical {{
     background: {Colors.BORDER_LT};
     border-radius: 4px;
-    min-height: 30px;
+    min-height: 40px;
 }}
 QScrollBar::handle:vertical:hover {{ background: {Colors.TEXT_DARK}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0px; }}
 QScrollBar:horizontal {{
     background: transparent;
-    height: 7px;
+    height: 8px;
     border-radius: 4px;
 }}
 QScrollBar::handle:horizontal {{
@@ -85,10 +85,10 @@ QPushButton {{
     color: {Colors.TEXT};
     border: 1px solid {Colors.BORDER_LT};
     border-radius: 8px;
-    padding: 8px 18px;
+    padding: 10px 20px;
     font-weight: 600;
-    font-size: 13px;
-    min-height: 36px;
+    font-size: 14px;
+    min-height: 40px;
 }}
 QPushButton:hover {{
     background-color: {Colors.BG_HOVER};
@@ -110,9 +110,9 @@ QLineEdit {{
     color: {Colors.TEXT};
     border: 1.5px solid {Colors.BORDER_LT};
     border-radius: 8px;
-    padding: 8px 12px;
-    font-size: 13px;
-    min-height: 36px;
+    padding: 10px 14px;
+    font-size: 14px;
+    min-height: 40px;
     selection-background-color: {Colors.BG_SELECTED};
     selection-color: {Colors.TEXT};
 }}
@@ -129,22 +129,22 @@ QComboBox {{
     color: {Colors.TEXT};
     border: 1.5px solid {Colors.BORDER_LT};
     border-radius: 8px;
-    padding: 8px 12px;
-    min-height: 36px;
-    font-size: 13px;
+    padding: 10px 14px;
+    min-height: 40px;
+    font-size: 14px;
 }}
 QComboBox:focus {{ border-color: {Colors.CYAN}; }}
 QComboBox:disabled {{
     background-color: {Colors.BG_INPUT};
     color: {Colors.TEXT_DARK};
 }}
-QComboBox::drop-down {{ border: none; width: 26px; }}
+QComboBox::drop-down {{ border: none; width: 30px; }}
 QComboBox::down-arrow {{
     image: none;
     border-left: 5px solid transparent;
     border-right: 5px solid transparent;
     border-top: 6px solid {Colors.TEXT_DIM};
-    margin-right: 8px;
+    margin-right: 10px;
 }}
 QComboBox QAbstractItemView {{
     background-color: {Colors.BG_CARD};
@@ -155,6 +155,7 @@ QComboBox QAbstractItemView {{
     selection-color: {Colors.CYAN};
     outline: none;
     padding: 4px;
+    min-height: 30px;
 }}
 
 /* ── Label ── */
@@ -170,13 +171,13 @@ QTableWidget {{
     border-radius: 10px;
     gridline-color: {Colors.BORDER};
     color: {Colors.TEXT};
-    font-size: 13px;
+    font-size: 14px;
     alternate-background-color: #FAFBFD;
     selection-background-color: {Colors.BG_SELECTED};
     selection-color: {Colors.CYAN};
 }}
 QTableWidget::item {{
-    padding: 8px 12px;
+    padding: 10px 14px;
     border-bottom: 1px solid {Colors.BORDER};
 }}
 QTableWidget::item:selected {{
@@ -188,9 +189,9 @@ QHeaderView::section {{
     background-color: #F8FAFD;
     color: {Colors.TEXT_DIM};
     font-weight: 700;
-    font-size: 11px;
+    font-size: 12px;
     letter-spacing: 0.8px;
-    padding: 10px 12px;
+    padding: 12px 14px;
     border: none;
     border-bottom: 2px solid {Colors.BORDER_LT};
 }}
@@ -200,7 +201,7 @@ QProgressBar {{
     background-color: #EEF2F7;
     border: none;
     border-radius: 6px;
-    height: 10px;
+    height: 12px;
     text-align: center;
     color: transparent;
 }}
@@ -221,18 +222,18 @@ QToolTip {{
     color: #FFFFFF;
     border: none;
     border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 12px;
+    padding: 8px 12px;
+    font-size: 13px;
 }}
 
 /* ── CheckBox ── */
 QCheckBox {{
     color: {Colors.TEXT};
-    spacing: 8px;
+    spacing: 10px;
 }}
 QCheckBox::indicator {{
-    width: 18px;
-    height: 18px;
+    width: 20px;
+    height: 20px;
     border: 2px solid {Colors.BORDER_LT};
     border-radius: 5px;
     background: {Colors.BG_CARD};
@@ -249,8 +250,8 @@ QSpinBox, QDateEdit, QTimeEdit {{
     color: {Colors.TEXT};
     border: 1.5px solid {Colors.BORDER_LT};
     border-radius: 8px;
-    padding: 6px 10px;
-    min-height: 34px;
+    padding: 8px 12px;
+    min-height: 40px;
 }}
 QSpinBox:focus, QDateEdit:focus {{ border-color: {Colors.CYAN}; }}
 
@@ -261,13 +262,13 @@ QScrollArea {{ border: none; background: transparent; }}
 QMessageBox {{ background-color: {Colors.BG_CARD}; }}
 QMessageBox QLabel {{
     color: {Colors.TEXT};
-    font-size: 13px;
-    min-width: 280px;
+    font-size: 14px;
+    min-width: 320px;
 }}
 QMessageBox QPushButton {{
-    min-width: 80px;
-    min-height: 32px;
-    padding: 6px 16px;
+    min-width: 90px;
+    min-height: 38px;
+    padding: 8px 16px;
 }}
 """
 
@@ -297,7 +298,7 @@ def card_style(accent: str = None, radius: int = 12) -> str:
         f"background-color: {Colors.BG_CARD};"
         f"border: 1px solid {c};"
         f"border-radius: {radius}px;"
-        f"padding: 16px;"
+        f"padding: 18px;"
     )
 
 
@@ -306,12 +307,11 @@ def badge_style(color: str) -> str:
         f"background-color: {color}18;"
         f"color: {color};"
         f"border: 1px solid {color}44;"
-        f"border-radius: 5px;"
-        f"padding: 2px 9px;"
-        f"font-size: 11px;"
+        f"border-radius: 6px;"
+        f"padding: 4px 12px;"
+        f"font-size: 12px;"
         f"font-weight: 700;"
     )
-
 
 def combo_style() -> str:
     return f"""
@@ -320,22 +320,22 @@ def combo_style() -> str:
             color: {Colors.TEXT};
             border: 1.5px solid {Colors.BORDER_LT};
             border-radius: 8px;
-            padding: 8px 12px;
-            font-size: 13px;
-            min-height: 38px;
+            padding: 10px 14px;
+            font-size: 14px;
+            min-height: 42px;
         }}
         QComboBox:focus {{ border-color: {Colors.CYAN}; }}
         QComboBox:disabled {{
             background: {Colors.BG_INPUT};
             color: {Colors.TEXT_DARK};
         }}
-        QComboBox::drop-down {{ border: none; width: 24px; }}
+        QComboBox::drop-down {{ border: none; width: 30px; }}
         QComboBox::down-arrow {{
             image: none;
             border-left: 5px solid transparent;
             border-right: 5px solid transparent;
             border-top: 6px solid {Colors.TEXT_DIM};
-            margin-right: 8px;
+            margin-right: 10px;
         }}
         QComboBox QAbstractItemView {{
             background: {Colors.BG_CARD};
@@ -356,8 +356,8 @@ def input_style() -> str:
             color: {Colors.TEXT};
             border: 1.5px solid {Colors.BORDER_LT};
             border-radius: 8px;
-            padding: 9px 12px;
-            font-size: 13px;
+            padding: 10px 14px;
+            font-size: 14px;
         }}
         QLineEdit:focus {{ border-color: {Colors.CYAN}; }}
         QLineEdit:disabled {{

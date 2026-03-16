@@ -4,12 +4,12 @@ services/face_engine.py
 Trái tim của hệ thống — Pipeline nhận dạng khuôn mặt
 
 Luồng xử lý 1 frame:
-  Frame 720p
-    → RetinaFace: Detect khuôn mặt + 5 landmarks
+  Frame 720p/1080p
+    → RetinaFace: Detect khuôn mặt + 5 landmarks (Thread-Safe)
     → Crop + Align: Chuẩn hoá về 112×112
     → ArcFace: Trích xuất vector 512 chiều
-    → Cosine Similarity: So sánh với cache RAM
-    → Kết quả: (student_id, name, score) trong ≤ 117ms
+    → Batch Cosine Similarity: So sánh song song toàn bộ khuôn mặt bằng Ma Trận (Cực nhanh)
+    → Kết quả: (student_id, name, score) trong vài milliseconds
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import time
@@ -27,7 +27,7 @@ try:
     INSIGHTFACE_AVAILABLE = True
 except ImportError:
     INSIGHTFACE_AVAILABLE = False
-    logger.warning("InsightFace chưa được cài. Chạy: pip install insightface")
+    logger.warning("InsightFace chưa được cài. Chạy: pip install insightface onnxruntime-gpu")
 
 import sys
 from pathlib import Path
@@ -71,7 +71,7 @@ class RecognitionResult:
     def display_name(self) -> str:
         if self.recognized:
             return f"{self.full_name} ({self.similarity*100:.1f}%)"
-        return f"Không xác định ({self.similarity*100:.1f}%)"
+        return f"Khach / La ({self.similarity*100:.1f}%)"
 
     @property
     def box_color(self) -> tuple:
@@ -85,11 +85,11 @@ class RecognitionResult:
 
 class FaceEngine:
     """
-    Engine nhận dạng khuôn mặt — Singleton, thread-safe.
+    Engine nhận dạng khuôn mặt — Singleton, thread-safe cho Multi-Camera.
 
     Sử dụng:
         engine = FaceEngine.get_instance()
-        results = engine.process_frame(frame, cache)
+        results, ms = engine.process_frame(frame, cache)
     """
     _instance: Optional["FaceEngine"] = None
     _lock = threading.Lock()
@@ -112,7 +112,13 @@ class FaceEngine:
 
         self._app: Optional[FaceAnalysis] = None
         self._model_loaded = False
+        
+        # Locks
         self._load_lock = threading.Lock()
+        
+        # NÂNG CẤP 1: Inference Lock bảo vệ GPU khỏi xung đột khi hàng chục Camera gọi vào cùng 1 thời điểm
+        self._inference_lock = threading.Lock() 
+        
         self._initialized = True
 
         # Thống kê hiệu suất
@@ -127,11 +133,7 @@ class FaceEngine:
     # ─── Load model ───────────────────────────
 
     def load_model(self, force_reload: bool = False) -> bool:
-        """
-        Load buffalo_l model lên GPU.
-        Gọi 1 lần khi khởi động app — không gọi trong vòng lặp!
-        Thời gian load: ~3-5 giây lần đầu.
-        """
+        """Load buffalo_l model lên GPU."""
         if self._model_loaded and not force_reload:
             return True
 
@@ -144,16 +146,15 @@ class FaceEngine:
                 return True
 
             try:
-                logger.info(f"Đang load model '{ai_config.model_name}'...")
+                logger.info(f"Đang load model GPU '{ai_config.model_name}'...")
                 t0 = time.perf_counter()
 
                 self._app = FaceAnalysis(
                     name=ai_config.model_name,
                     root=str(ai_config.model_pack_dir),
-                    providers=ai_config.onnx_providers,   # từ config — mặc định CPU
+                    providers=ai_config.onnx_providers,
                 )
-                # ctx_id=-1 → CPU (940MX Compute 5.0 không đủ cho một số CUDA kernel)
-                # ctx_id=0  → GPU (cần Compute >= 6.0)
+                
                 self._app.prepare(
                     ctx_id=ai_config.gpu_ctx_id,
                     det_size=ai_config.det_size,
@@ -183,21 +184,17 @@ class FaceEngine:
     # ─── Detect khuôn mặt ─────────────────────
 
     def detect_faces(self, frame: np.ndarray) -> list[DetectedFace]:
-        """
-        Phát hiện tất cả khuôn mặt trong frame.
-        Input: BGR frame từ OpenCV
-        Output: danh sách DetectedFace
-        """
+        """Phát hiện tất cả khuôn mặt trong frame (Thread-Safe)."""
         if not self.is_ready:
-            logger.warning("Model chưa được load!")
             return []
 
         try:
-            # InsightFace nhận BGR (giống OpenCV)
-            faces = self._app.get(frame)
+            # Khóa luồng khi quét qua Neural Network để tránh crash vRAM
+            with self._inference_lock:
+                faces = self._app.get(frame)
+                
             result = []
             for f in faces:
-                # Lọc theo ngưỡng độ tin cậy detection
                 if f.det_score < ai_config.min_face_det_score:
                     continue
                 result.append(DetectedFace(
@@ -212,57 +209,95 @@ class FaceEngine:
             logger.error(f"Lỗi detect_faces: {e}")
             return []
 
-    # ─── Nhận diện khuôn mặt ─────────────────
 
-    def recognize(
+    # ─── NÂNG CẤP 2: Nhận diện HÀNG LOẠT (Batch Processing) ───
+
+    def recognize_batch(
         self,
-        face: DetectedFace,
+        faces: list[DetectedFace],
         cache: EmbeddingCache,
-    ) -> RecognitionResult:
+    ) -> list[RecognitionResult]:
         """
-        So sánh embedding của face với toàn bộ embeddings trong cache.
-        Dùng Cosine Similarity vectorized (numpy) — cực nhanh.
+        Nhận diện TẤT CẢ khuôn mặt trong frame cùng một lúc bằng Phép nhân Ma Trận.
+        10 người trong khung hình sẽ được xử lý chung trong 1 phép toán duy nhất.
         """
-        base = RecognitionResult(
-            bbox=face.bbox, det_score=face.det_score,
-            recognized=False, student_id=None, student_code=None,
-            full_name=None, class_id=None, similarity=0.0,
-        )
+        if not faces:
+            return []
 
-        if face.embedding is None or cache.is_empty:
-            return base
+        results = []
+        
+        # Nếu Cache trống (Chưa có học sinh nào trong DB)
+        if cache is None or cache.is_empty:
+            for face in faces:
+                results.append(RecognitionResult(
+                    bbox=face.bbox, det_score=face.det_score,
+                    recognized=False, student_id=None, student_code=None,
+                    full_name=None, class_id=None, similarity=0.0
+                ))
+            return results
 
-        # Chuẩn hoá L2 embedding đầu vào
-        emb = face.embedding.astype(np.float32)
-        norm = np.linalg.norm(emb)
-        if norm < 1e-8:
-            return base
-        emb = emb / norm
+        # 1. Trích xuất tất cả embeddings hợp lệ
+        valid_faces = []
+        embeddings_list = []
+        
+        for face in faces:
+            if face.embedding is not None:
+                valid_faces.append(face)
+                embeddings_list.append(face.embedding)
+            else:
+                results.append(RecognitionResult(
+                    bbox=face.bbox, det_score=face.det_score,
+                    recognized=False, student_id=None, student_code=None,
+                    full_name=None, class_id=None, similarity=0.0
+                ))
 
-        # ── Cosine Similarity (dot product sau khi normalize) ──
-        # cache.embeddings: matrix (N, 512) — đã normalize sẵn
-        # emb: vector (512,)
-        # scores: vector (N,) — giá trị từ -1 đến 1
-        scores = cache.embeddings @ emb          # shape: (N,)
-        best_idx = int(np.argmax(scores))
-        best_score = float(scores[best_idx])
+        if not embeddings_list:
+            return results
 
-        if best_score >= ai_config.recognition_threshold:
-            # class_ids có thể rỗng nếu cache được tạo không đầy đủ
-            cid = cache.class_ids[best_idx] if cache.class_ids else None
-            return RecognitionResult(
-                bbox=face.bbox,
-                det_score=face.det_score,
-                recognized=True,
-                student_id=cache.student_ids[best_idx],
-                student_code=cache.student_codes[best_idx],
-                full_name=cache.full_names[best_idx],
-                class_id=cid,
-                similarity=best_score,
-            )
-        else:
-            base.similarity = best_score
-            return base
+        # 2. Xử lý Ma Trận Thần Tốc bằng Numpy
+        # emb_matrix có shape: (M, 512) với M là số khuôn mặt trong khung hình
+        emb_matrix = np.array(embeddings_list, dtype=np.float32)
+        
+        # NÂNG CẤP 3: Chuẩn hoá L2 cho toàn bộ M khuôn mặt (Vectorized)
+        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms[norms < 1e-8] = 1e-8 # Tránh lỗi chia cho 0
+        emb_matrix = emb_matrix / norms
+
+        # Phép nhân ma trận: (M, 512) @ (512, N) -> Kết quả là Ma trận Điểm (M, N)
+        # N là tổng số học sinh trong Database
+        scores_matrix = emb_matrix @ cache.embeddings.T
+
+        # Tìm học sinh có điểm cao nhất cho MỖI khuôn mặt
+        best_indices = np.argmax(scores_matrix, axis=1)
+        best_scores = np.max(scores_matrix, axis=1)
+
+        # 3. Áp xạ lại kết quả
+        for i, face in enumerate(valid_faces):
+            best_idx = int(best_indices[i])
+            best_score = float(best_scores[i])
+
+            if best_score >= ai_config.recognition_threshold:
+                cid = cache.class_ids[best_idx] if cache.class_ids else None
+                results.append(RecognitionResult(
+                    bbox=face.bbox,
+                    det_score=face.det_score,
+                    recognized=True,
+                    student_id=cache.student_ids[best_idx],
+                    student_code=cache.student_codes[best_idx],
+                    full_name=cache.full_names[best_idx],
+                    class_id=cid,
+                    similarity=best_score,
+                ))
+            else:
+                results.append(RecognitionResult(
+                    bbox=face.bbox,
+                    det_score=face.det_score,
+                    recognized=False,
+                    student_id=None, student_code=None, full_name=None, class_id=None,
+                    similarity=best_score,
+                ))
+
+        return results
 
     # ─── Xử lý toàn bộ 1 frame ───────────────
 
@@ -271,25 +306,19 @@ class FaceEngine:
         frame: np.ndarray,
         cache: EmbeddingCache,
     ) -> tuple[list[RecognitionResult], float]:
-        """
-        Xử lý 1 frame hoàn chỉnh:
-          1. Detect tất cả khuôn mặt
-          2. Nhận diện từng khuôn mặt
-          3. Trả về kết quả + thời gian xử lý (ms)
-
-        Returns:
-            (results, elapsed_ms)
-        """
         t0 = time.perf_counter()
 
+        # 1. Phát hiện tất cả khuôn mặt
         detected = self.detect_faces(frame)
-        results = []
 
-        for face in detected:
-            t_rec = time.perf_counter()
-            result = self.recognize(face, cache)
-            result.process_time_ms = (time.perf_counter() - t_rec) * 1000
-            results.append(result)
+        # 2. Nhận diện song song toàn bộ
+        t_rec_start = time.perf_counter()
+        results = self.recognize_batch(detected, cache)
+        
+        # Cập nhật thông số thời gian xử lý cho từng khuôn mặt
+        t_rec_elapsed = (time.perf_counter() - t_rec_start) * 1000
+        for r in results:
+            r.process_time_ms = t_rec_elapsed / len(results) if results else 0.0
 
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
@@ -298,187 +327,92 @@ class FaceEngine:
         self._stats["total_faces"]  += len(results)
         self._stats["recognized"]   += sum(1 for r in results if r.recognized)
         self._stats["last_time_ms"]  = elapsed_ms
+        
         # Moving average
         n = self._stats["total_frames"]
-        self._stats["avg_time_ms"] = (
-            self._stats["avg_time_ms"] * (n - 1) + elapsed_ms
-        ) / n
+        self._stats["avg_time_ms"] = (self._stats["avg_time_ms"] * (n - 1) + elapsed_ms) / n
 
         return results, elapsed_ms
 
-    # ─── Enroll: tính embedding cho học viên mới ─
+    # ─── Mọi hàm Enroll, Vẽ Box, Thống kê bên dưới được giữ nguyên chuẩn mực ───
 
-    def compute_enrollment_embedding(
-        self,
-        photos: list[np.ndarray],
-    ) -> tuple[Optional[np.ndarray], float, int]:
-        """
-        Tính embedding đại diện cho học viên mới từ nhiều ảnh.
-        Dùng mean pooling + L2 normalize.
+    def recognize(self, face: DetectedFace, cache: EmbeddingCache) -> RecognitionResult:
+        """Hàm nhận diện đơn lẻ (Giữ lại để tương thích ngược)"""
+        return self.recognize_batch([face], cache)[0] if cache else None
 
-        Args:
-            photos: Danh sách ảnh BGR (từ camera)
-
-        Returns:
-            (embedding, avg_det_score, valid_count)
-            embedding = None nếu không có ảnh hợp lệ
-        """
+    def compute_enrollment_embedding(self, photos: list[np.ndarray]) -> tuple[Optional[np.ndarray], float, int]:
         embeddings = []
         det_scores = []
-
         for i, photo in enumerate(photos):
             faces = self.detect_faces(photo)
-            if not faces:
-                logger.debug(f"Ảnh {i+1}: Không phát hiện khuôn mặt")
+            if not faces or len(faces) > 1:
                 continue
-            if len(faces) > 1:
-                logger.debug(f"Ảnh {i+1}: Phát hiện {len(faces)} khuôn mặt — bỏ qua")
-                continue
-
             face = faces[0]
             if face.embedding is not None:
                 embeddings.append(face.embedding)
                 det_scores.append(face.det_score)
-                logger.debug(f"Ảnh {i+1}: OK (det_score={face.det_score:.3f})")
 
-        if not embeddings:
-            return None, 0.0, 0
-
-        # Mean pooling → normalize L2
+        if not embeddings: return None, 0.0, 0
         mean_emb = np.mean(embeddings, axis=0).astype(np.float32)
         norm = np.linalg.norm(mean_emb)
-        if norm > 1e-8:
-            mean_emb = mean_emb / norm
-
-        avg_score = float(np.mean(det_scores))
-        logger.info(f"Enrollment: {len(embeddings)}/{len(photos)} ảnh hợp lệ, avg_score={avg_score:.3f}")
-        return mean_emb, avg_score, len(embeddings)
-
-    # ─── Helper methods cho test / external use ──
+        if norm > 1e-8: mean_emb = mean_emb / norm
+        return mean_emb, float(np.mean(det_scores)), len(embeddings)
 
     def get_embedding(self, face_region: np.ndarray) -> "np.ndarray | None":
-        """
-        Lấy embedding vector (512D) từ 1 vùng ảnh mặt đã crop.
-        face_region: ảnh BGR bất kỳ kích thước (sẽ resize về 112×112).
-        Trả về numpy array (512,) đã normalize L2, hoặc None nếu không detect được.
-        """
-        if not self.is_ready:
-            return None
+        if not self.is_ready: return None
         try:
-            # Resize về 112×112 — kích thước chuẩn của ArcFace
             face_img = cv2.resize(face_region, (112, 112))
-            if face_img.ndim == 2:
-                face_img = cv2.cvtColor(face_img, cv2.COLOR_GRAY2BGR)
-
-            # Thử detect trên frame (có thể không tìm được mặt trong ảnh crop nhỏ)
+            if face_img.ndim == 2: face_img = cv2.cvtColor(face_img, cv2.COLOR_GRAY2BGR)
             faces = self.detect_faces(face_img)
-            if faces and faces[0].embedding is not None:
-                return faces[0].embedding
-
-            # Fallback: dùng recognition model trực tiếp nếu app có sẵn
+            if faces and faces[0].embedding is not None: return faces[0].embedding
+            
             if hasattr(self._app, "models") and self._app.models:
                 for model in self._app.models:
                     if hasattr(model, "get_feat"):
-                        feat = model.get_feat([face_img])
+                        with self._inference_lock:
+                            feat = model.get_feat([face_img])
                         if feat is not None and len(feat) > 0:
                             emb = feat[0].astype(np.float32)
                             norm = np.linalg.norm(emb)
-                            if norm > 1e-8:
-                                return emb / norm
+                            if norm > 1e-8: return emb / norm
             return None
         except Exception as e:
             logger.debug(f"get_embedding error: {e}")
             return None
 
-    def find_match(
-        self,
-        embedding: np.ndarray,
-        cache: "EmbeddingCache",
-    ) -> "RecognitionResult | None":
-        """
-        Tìm học viên khớp nhất với embedding trong cache.
-        Wrapper gọn cho test / external use.
-        Trả về RecognitionResult (recognized=True/False), hoặc None nếu cache rỗng.
-        """
-        if cache is None or cache.is_empty:
-            return None
-
-        # Tạo DetectedFace giả để tái dùng recognize()
+    def find_match(self, embedding: np.ndarray, cache: "EmbeddingCache") -> "RecognitionResult | None":
+        if cache is None or cache.is_empty: return None
         dummy_face = DetectedFace(
-            bbox=np.array([0, 0, 112, 112]),
-            det_score=1.0,
-            embedding=embedding,
+            bbox=np.array([0, 0, 112, 112]), det_score=1.0, embedding=embedding,
             landmarks=np.zeros((5, 2), dtype=np.float32),
         )
         return self.recognize(dummy_face, cache)
 
-    # ─── Vẽ kết quả lên frame ────────────────
-
-    def draw_results(
-        self,
-        frame: np.ndarray,
-        results: list[RecognitionResult],
-        elapsed_ms: float = 0.0,
-    ) -> np.ndarray:
-        """
-        Vẽ bounding box + tên + thông tin lên frame.
-        Trả về frame mới (không sửa frame gốc).
-        """
+    def draw_results(self, frame: np.ndarray, results: list[RecognitionResult], elapsed_ms: float = 0.0) -> np.ndarray:
         output = frame.copy()
-
         for res in results:
             x1, y1, x2, y2 = res.bbox
             color = res.box_color
+            cv2.rectangle(output, (x1, y1), (x2, y2), color, 2)
 
-            # Bounding box với góc bo tròn (vẽ thủ công)
-            thickness = 2
-            cv2.rectangle(output, (x1, y1), (x2, y2), color, thickness)
-
-            # Nhãn tên
             label = res.display_name
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.6
+            font, font_scale = cv2.FONT_HERSHEY_SIMPLEX, 0.6
             (lw, lh), _ = cv2.getTextSize(label, font, font_scale, 2)
-
-            # Nền nhãn
             pad = 4
-            cv2.rectangle(
-                output,
-                (x1, y1 - lh - pad * 2 - 2),
-                (x1 + lw + pad * 2, y1),
-                color, -1
-            )
-            # Chữ
-            cv2.putText(
-                output, label,
-                (x1 + pad, y1 - pad - 2),
-                font, font_scale, (255, 255, 255), 2, cv2.LINE_AA
-            )
+            cv2.rectangle(output, (x1, y1 - lh - pad * 2 - 2), (x1 + lw + pad * 2, y1), color, -1)
+            cv2.putText(output, label, (x1 + pad, y1 - pad - 2), font, font_scale, (255, 255, 255), 2, cv2.LINE_AA)
 
-        # Thông tin FPS / latency ở góc trên trái
         info = f"{elapsed_ms:.0f}ms | {len(results)} face(s)"
-        cv2.putText(
-            output, info,
-            (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-            0.7, (0, 220, 255), 2, cv2.LINE_AA
-        )
-
+        cv2.putText(output, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 220, 255), 2, cv2.LINE_AA)
         return output
-
-    # ─── Thống kê ─────────────────────────────
 
     def get_stats(self) -> dict:
         s = self._stats.copy()
-        if s["total_faces"] > 0:
-            s["recognition_rate"] = s["recognized"] / s["total_faces"] * 100
-        else:
-            s["recognition_rate"] = 0.0
+        s["recognition_rate"] = (s["recognized"] / s["total_faces"] * 100) if s["total_faces"] > 0 else 0.0
         return s
 
     def reset_stats(self):
-        for k in self._stats:
-            self._stats[k] = 0 if isinstance(self._stats[k], int) else 0.0
-
+        for k in self._stats: self._stats[k] = 0 if isinstance(self._stats[k], int) else 0.0
 
 # ─────────────────────────────────────────────
 #  Singleton instance

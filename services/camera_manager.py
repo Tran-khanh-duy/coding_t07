@@ -7,6 +7,7 @@ Quản lý camera — hỗ trợ:
   • Tự động kết nối lại khi mất tín hiệu
   • Nhiều camera chạy song song (mỗi camera 1 thread)
   • Cung cấp frame mới nhất cho UI thread (không block)
+  • NÂNG CẤP: Thread-safe tối ưu cho RTSP, giảm tối đa độ trễ buffer.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 import cv2
@@ -55,15 +56,12 @@ class CameraInfo:
     @property
     def source_display(self) -> str:
         if self.is_ip_camera:
-            # Ẩn mật khẩu: rtsp://user:pass@host → rtsp://user:***@host
-            # Regex cũ r':(.*?)@' match từ ':' đầu tiên (sau 'rtsp') → sai
             import re
             masked = re.sub(
                 r'(://[^:@/]+):[^@/]+@',   # ://user:PASS@ → ://user:***@
                 r'\1:***@',
                 self.source,
             )
-            # Nếu không có credentials (không có @), trả nguyên URL
             return masked
         return f"USB Camera #{self.source}"
 
@@ -89,7 +87,7 @@ class CameraThread(threading.Thread):
         self._on_status = on_status
 
         # Frame buffer — chỉ giữ frame mới nhất (queue size=1)
-        self._frame_queue: queue.Queue = queue.Queue(maxsize=1)
+        self._frame_queue = queue.Queue(maxsize=1)
 
         self._stop_event = threading.Event()
         self._cap: Optional[cv2.VideoCapture] = None
@@ -101,7 +99,7 @@ class CameraThread(threading.Thread):
     # ─── Public API ───────────────────────────
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
-        """Lấy frame mới nhất — non-blocking, trả None nếu chưa có frame."""
+        """Lấy frame mới nhất — non-blocking."""
         try:
             return self._frame_queue.get_nowait()
         except queue.Empty:
@@ -160,7 +158,6 @@ class CameraThread(threading.Thread):
         """Mở kết nối tới camera."""
         try:
             source = self.info.source
-            # Chuyển string "0" thành int cho webcam USB
             if str(source).isdigit():
                 source = int(source)
 
@@ -169,16 +166,14 @@ class CameraThread(threading.Thread):
             if not self._cap.isOpened():
                 return False
 
-            # Đặt độ phân giải 720p
             self._cap.set(cv2.CAP_PROP_FRAME_WIDTH,  camera_config.width)
             self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_config.height)
             self._cap.set(cv2.CAP_PROP_FPS, camera_config.fps)
 
-            # Với camera IP: giảm buffer để giảm độ trễ
+            # NÂNG CẤP: Tối ưu buffer size = 1 để giảm độ trễ cho RTSP
             if self.info.is_ip_camera:
                 self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-            # Đọc thử 1 frame
             ret, _ = self._cap.read()
             return ret
 
@@ -199,28 +194,24 @@ class CameraThread(threading.Thread):
                 logger.debug(f"[{self.info.name}] Đọc frame thất bại")
                 break
 
-            # Cập nhật thống kê
             self.info.frame_count  += 1
             self.info.last_frame_time = time.time()
             self._update_fps()
 
-            # Frame skip: xử lý 1 trong N frames (tiết kiệm CPU)
+            # Frame skip: xử lý 1 trong N frames
             frame_skip += 1
             if frame_skip < camera_config.process_every_n_frames:
                 continue
             frame_skip = 0
 
-            # Đưa frame vào queue — nếu queue đầy thì bỏ frame cũ
-            if not self._frame_queue.full():
-                self._frame_queue.put_nowait(frame)
-            else:
+            # Cập nhật frame mới nhất vào queue (luôn xoá frame cũ trước)
+            if self._frame_queue.full():
                 try:
-                    self._frame_queue.get_nowait()   # Bỏ frame cũ
-                    self._frame_queue.put_nowait(frame)
+                    self._frame_queue.get_nowait()
                 except queue.Empty:
                     pass
+            self._frame_queue.put_nowait(frame)
 
-            # Gọi callback nếu có
             if self._on_frame:
                 try:
                     self._on_frame(self.info.camera_id, frame)
@@ -231,7 +222,7 @@ class CameraThread(threading.Thread):
         self._fps_counter += 1
         now = time.time()
         elapsed = now - self._fps_timer
-        if elapsed >= 2.0:  # Cập nhật FPS mỗi 2 giây
+        if elapsed >= 2.0:
             self.info.fps_actual = self._fps_counter / elapsed
             self._fps_counter = 0
             self._fps_timer   = now
@@ -261,14 +252,6 @@ class CameraManager:
     """
     Quản lý nhiều camera song song.
     Thread-safe — gọi từ UI thread an toàn.
-
-    Sử dụng:
-        mgr = CameraManager()
-        mgr.add_camera(1, "Tầng 1", "rtsp://...")
-        mgr.start_all()
-
-        # Trong UI loop:
-        frame = mgr.get_frame(camera_id=1)
     """
 
     def __init__(self):
@@ -285,7 +268,6 @@ class CameraManager:
         source:    str,
         floor:     int = 0,
     ) -> bool:
-        """Thêm camera vào manager (chưa bắt đầu capture)."""
         with self._lock:
             if camera_id in self._threads:
                 logger.warning(f"Camera {camera_id} đã tồn tại — bỏ qua")
@@ -306,7 +288,6 @@ class CameraManager:
             return True
 
     def add_camera_from_config(self, cam_dict: dict) -> bool:
-        """Thêm camera từ dict trong config.py (CAMERAS list)."""
         return self.add_camera(
             camera_id=cam_dict["id"],
             name=cam_dict["name"],
@@ -315,7 +296,6 @@ class CameraManager:
         )
 
     def remove_camera(self, camera_id: int):
-        """Dừng và xoá camera."""
         with self._lock:
             thread = self._threads.pop(camera_id, None)
         if thread:
@@ -326,7 +306,6 @@ class CameraManager:
     # ─── Start / Stop ─────────────────────────
 
     def start_camera(self, camera_id: int) -> bool:
-        """Bắt đầu capture 1 camera."""
         with self._lock:
             thread = self._threads.get(camera_id)
         if not thread:
@@ -340,7 +319,6 @@ class CameraManager:
         return True
 
     def start_all(self):
-        """Bắt đầu tất cả camera đã thêm."""
         with self._lock:
             ids = list(self._threads.keys())
         for cid in ids:
@@ -348,7 +326,6 @@ class CameraManager:
         logger.info(f"Đã start {len(ids)} camera(s)")
 
     def stop_camera(self, camera_id: int):
-        """Dừng 1 camera."""
         with self._lock:
             thread = self._threads.get(camera_id)
         if thread:
@@ -357,7 +334,6 @@ class CameraManager:
             logger.info(f"Đã stop camera {camera_id}")
 
     def stop_all(self):
-        """Dừng tất cả camera."""
         with self._lock:
             threads = list(self._threads.values())
         for t in threads:
@@ -369,10 +345,6 @@ class CameraManager:
     # ─── Lấy frame ────────────────────────────
 
     def get_frame(self, camera_id: int) -> Optional[np.ndarray]:
-        """
-        Lấy frame mới nhất từ camera — non-blocking.
-        Trả None nếu camera chưa có frame.
-        """
         with self._lock:
             thread = self._threads.get(camera_id)
         if thread:
@@ -380,10 +352,6 @@ class CameraManager:
         return None
 
     def get_frame_any(self) -> tuple[int, Optional[np.ndarray]]:
-        """
-        Lấy frame từ camera đầu tiên đang connected.
-        Trả (camera_id, frame).
-        """
         with self._lock:
             threads = list(self._threads.items())
         for cid, thread in threads:
@@ -417,7 +385,6 @@ class CameraManager:
             return list(self._threads.keys())
 
     def on_status_change(self, callback: Callable):
-        """Đăng ký callback khi trạng thái camera thay đổi."""
         self._status_callbacks.append(callback)
 
     def _handle_status_change(self, camera_id: int, status: CameraStatus):
@@ -435,10 +402,6 @@ class CameraManager:
         save_path: str,
         frame: Optional[np.ndarray] = None,
     ) -> bool:
-        """
-        Chụp và lưu ảnh từ camera.
-        Nếu frame=None thì lấy frame mới nhất từ camera.
-        """
         if frame is None:
             frame = self.get_frame(camera_id)
         if frame is None:

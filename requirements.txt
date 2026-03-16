@@ -1,18 +1,17 @@
 # ============================================================
 # Face Attendance System - Requirements
-# Python 3.11 | Windows 10+ | NVIDIA GeForce 940MX
+# Python 3.11 | Windows 10+ | NVIDIA GeForce 940MX (CUDA 11.8)
 # ============================================================
 
 # --- Core AI / Face Recognition ---
-# QUAN TRỌNG: Cài onnxruntime-gpu (KHÔNG dùng onnxruntime thường)
 onnxruntime-gpu==1.16.3
 insightface==0.7.3
 opencv-python==4.8.1.78
 numpy==1.26.2
 scipy==1.11.4
 
-# --- Vector Search (tìm kiếm embedding nhanh) ---
-faiss-cpu==1.7.4          # Dùng faiss-cpu vì 940MX VRAM chỉ 2GB
+# --- Vector Search ---
+faiss-cpu==1.7.4
 
 # --- GUI ---
 PyQt6==6.6.1
@@ -23,31 +22,25 @@ PyQt6-sip==13.6.0
 pyodbc==5.0.1
 sqlalchemy==2.0.23
 
-# --- Reports ---
-openpyxl==3.1.2           # Export Excel
-reportlab==4.0.8          # Export PDF
+# --- Reports & Data ---
+pandas==2.1.3
+openpyxl==3.1.2
+reportlab==4.0.8
 
 # --- Utilities ---
-python-dotenv==1.0.0      # Load .env config
-Pillow==10.1.0            # Image processing
-psutil==5.9.7             # Monitor CPU/RAM usage
-loguru==0.7.2             # Logging đẹp hơn logging chuẩn
+python-dotenv==1.0.0
+Pillow==10.1.0
+psutil==5.9.7
+loguru==0.7.2
 
 # --- Dev / Testing ---
 pytest==7.4.3
 pytest-qt==4.2.0
 
 # ============================================================
-# HƯỚNG DẪN CÀI ĐẶT:
-# 1. pip install --upgrade pip
-# 2. pip install onnxruntime-gpu==1.16.3
-# 3. pip install -r requirements.txt
-#
-# Kiểm tra GPU:
-#   python -c "import onnxruntime as ort; print(ort.get_device())"
-#   → Phải in ra: GPU
-#
-# Nếu chỉ in CPU: Kiểm tra CUDA 11.8 + cuDNN 8.6 đã cài chưa
-# Download CUDA 11.8: https://developer.nvidia.com/cuda-11-8-0-download-archive
-# Download cuDNN 8.6: https://developer.nvidia.com/rdp/cudnn-archive
+# GHI CHÚ CÀI ĐẶT CHO GPU 940MX:
+# 1. Cài CUDA Toolkit 11.8
+# 2. Cài cuDNN 8.9.x (cho CUDA 11.x)
+# 3. Thêm đường dẫn CUDA vào Environment Variables (Path)
+# 4. Chạy: pip install onnxruntime-gpu==1.16.3
 # ============================================================
