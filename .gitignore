@@ -1,0 +1,33 @@
+# Bỏ qua thư mục rác của C# / Visual Studio (nếu có)
+bin/
+obj/
+.vs/
+*.user
+
+# Bỏ qua thư mục rác của Python (nếu có)
+__pycache__/
+*.py[cod]
+venv/
+env/
+env_face/
+.env
+
+# Bỏ qua file database cục bộ
+*.db
+*.sqlite3
+*.mdf
+*.ldf
+
+# Bỏ qua các model AI quá nặng (trên 100MB sẽ bị GitHub chặn)
+*.dat
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# Bỏ qua file log
+logs/
+*.log
+
+models/
+*.zip
