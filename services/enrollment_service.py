@@ -269,6 +269,7 @@ class EnrollmentService:
             student_code=student.student_code,
             full_name=student.full_name,
             class_id=student.class_id or 0,
+            class_name=student.class_name or "",
             embedding=embedding,
         )
 

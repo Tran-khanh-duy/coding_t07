@@ -29,6 +29,7 @@ from ui.pages.enroll_page import EnrollPage
 from ui.pages.students_page import StudentsPage
 from ui.pages.attendance_page import AttendancePage
 from ui.pages.reports_page import ReportsPage
+from ui.pages.cameras_page import CamerasPage
 from ui.pages.settings_page import SettingsPage
 
 # ─────────────────────────────────────────────
@@ -177,6 +178,7 @@ class MainWindow(QMainWindow):
             Sidebar.PAGE_ENROLL: EnrollPage(),
             Sidebar.PAGE_STUDENTS: StudentsPage(),
             Sidebar.PAGE_REPORTS: ReportsPage(),
+            Sidebar.PAGE_CAMERAS: CamerasPage(),
             Sidebar.PAGE_SETTINGS: SettingsPage()
         }
 

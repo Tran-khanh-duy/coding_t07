@@ -95,7 +95,8 @@ class Sidebar(QWidget):
     PAGE_ENROLL     = 2
     PAGE_STUDENTS   = 3
     PAGE_REPORTS    = 4
-    PAGE_SETTINGS   = 5
+    PAGE_CAMERAS    = 5
+    PAGE_SETTINGS   = 6
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -162,6 +163,7 @@ class Sidebar(QWidget):
             ("👤", "Đăng ký mới",    self.PAGE_ENROLL),
             ("📚", "Danh sách HV",    self.PAGE_STUDENTS),
             ("📊", "Báo cáo Excel",   self.PAGE_REPORTS),
+            ("🎥", "Quản lý Camera",  self.PAGE_CAMERAS),
         ]
         
         for icon, label, page_id in nav_items:

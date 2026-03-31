@@ -115,17 +115,13 @@ class EmbeddingCacheManager:
         with self._rlock:
             return self._cache.is_empty
 
-    # ─── Thêm học viên vào cache ngay lập tức ─
+    # ─── Thêm/Xóa học viên vào cache ngay lập tức ─
 
     def add_student_to_cache(self, student_id: int, student_code: str,
-                              full_name: str, class_id: int,
+                              full_name: str, class_id: int, class_name: str,
                               embedding) -> bool:
         """
         Thêm 1 học viên vào cache mà không cần reload toàn bộ.
-        Nhanh hơn reload() khi chỉ thêm 1 người.
-
-        FIX: Xây dựng numpy array MỚI bên trong lock thay vì vstack() in-place,
-        tránh race condition khi thread nhận diện đang đọc mảng embeddings cũ.
         """
         import numpy as np
         try:
@@ -139,12 +135,13 @@ class EmbeddingCacheManager:
                 self._cache.student_codes.append(student_code)
                 self._cache.full_names.append(full_name)
                 self._cache.class_ids.append(class_id)
+                self._cache.class_names.append(class_name)
 
                 if self._cache.embeddings is None:
                     # Tạo array mới hoàn toàn
                     self._cache.embeddings = emb.reshape(1, -1).copy()
                 else:
-                    # Tạo array mới (KHÔNG mutate array cũ) → thread đang đọc array cũ vẫn an toàn
+                    # Tạo array mới (KHÔNG mutate array cũ)
                     new_embeddings = np.empty(
                         (self._cache.embeddings.shape[0] + 1, emb.shape[0]),
                         dtype=np.float32
@@ -153,10 +150,40 @@ class EmbeddingCacheManager:
                     new_embeddings[-1]  = emb
                     self._cache.embeddings = new_embeddings  # atomic replace
 
-            logger.info(f"Thêm vào cache: [{student_code}] {full_name} | Cache size: {self.size}")
+            logger.info(f"Thêm vào cache: [{student_code}] {full_name} ({class_name}) | Cache size: {self.size}")
             return True
         except Exception as e:
             logger.error(f"Lỗi add_student_to_cache: {e}")
+            return False
+
+    def remove_student_from_cache(self, student_id: int) -> bool:
+        """Xóa học viên khỏi RAM cache ngay lập tức."""
+        import numpy as np
+        try:
+            with self._rlock:
+                if student_id not in self._cache.student_ids:
+                    return False
+                
+                idx = self._cache.student_ids.index(student_id)
+                
+                # Xóa khỏi lists
+                self._cache.student_ids.pop(idx)
+                self._cache.student_codes.pop(idx)
+                self._cache.full_names.pop(idx)
+                self._cache.class_ids.pop(idx)
+                self._cache.class_names.pop(idx)
+                
+                # Xóa khỏi numpy matrix
+                if self._cache.embeddings is not None:
+                    # Tạo matrix mới bỏ qua dòng idx
+                    self._cache.embeddings = np.delete(self._cache.embeddings, idx, axis=0)
+                    if self._cache.embeddings.shape[0] == 0:
+                        self._cache.embeddings = None
+                
+            logger.info(f"Đã xóa student_id={student_id} khỏi RAM cache. Size còn lại: {self.size}")
+            return True
+        except Exception as e:
+            logger.error(f"Lỗi khi xóa học viên khỏi cache: {e}")
             return False
 
     # ─── Thông tin debug ──────────────────────

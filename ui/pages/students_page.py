@@ -323,8 +323,11 @@ class StudentsPage(QWidget):
         if confirm == QMessageBox.StandardButton.Yes:
             try:
                 from database.repositories import student_repo
+                from services.embedding_cache_manager import cache_manager
                 if student_repo.delete(student_id):
                     logger.success(f"Đã xóa học viên ID: {student_id}")
+                    # Xóa khỏi RAM cache ngay lập tức
+                    cache_manager.remove_student_from_cache(student_id)
                     self.load_students() # Tải lại bảng
                 else:
                     QMessageBox.warning(self, "Lỗi", "Không thể xóa học viên này!")

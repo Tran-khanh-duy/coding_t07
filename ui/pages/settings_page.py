@@ -1,6 +1,6 @@
 """
 ui/pages/settings_page.py
-Trang cấu hình hệ thống — Cho phép tùy chỉnh Camera, AI và Database.
+Trang cấu hình hệ thống — Cải tiến: Bỏ mục thừa, thêm mục thực tế, lưu .env.
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, 
@@ -15,7 +15,8 @@ from pathlib import Path
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from ui.styles.theme import Colors, card_style
-from config import db_config, ai_config, camera_config, app_config
+from config import db_config, ai_config, camera_config, app_config, report_config
+from utils.config_manager import save_to_env
 
 class SettingsPage(QWidget):
     def __init__(self, parent=None):
@@ -32,57 +33,58 @@ class SettingsPage(QWidget):
         header = QVBoxLayout()
         title = QLabel("Cấu Hình Hệ Thống")
         title.setStyleSheet(f"font-size: 24px; font-weight: 800; color: {Colors.TEXT};")
-        subtitle = QLabel("Tinh chỉnh thông số vận hành AI, Camera và Kết nối dữ liệu")
+        subtitle = QLabel("Tinh chỉnh thông số vận hành AI và Kết nối dữ liệu")
         subtitle.setStyleSheet(f"font-size: 13px; color: {Colors.TEXT_DIM};")
         header.addWidget(title)
         header.addWidget(subtitle)
         root.addLayout(header)
 
-        # --- Scroll Area for settings groups ---
+        # --- Scroll Area ---
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("background: transparent;")
         
         container = QWidget()
-        container.setStyleSheet("background: transparent;")
         self.container_layout = QVBoxLayout(container)
         self.container_layout.setSpacing(25)
 
-        # 1. Nhóm Camera
-        self._group_camera = self._create_group("📹  CẤU HÌNH CAMERA")
-        cam_form = QFormLayout(self._group_camera)
-        self._set_form_style(cam_form)
-        
-        self.edit_cam_source = QLineEdit()
-        self.edit_cam_source.setPlaceholderText("0 hoặc RTSP URL")
-        self.spin_cam_fps = QSpinBox()
-        self.spin_cam_fps.setRange(1, 60)
-        self.spin_frame_skip = QSpinBox()
-        self.spin_frame_skip.setRange(1, 30)
-        self.spin_frame_skip.setToolTip("Xử lý 1 frame sau mỗi N frames (Tăng hiệu suất)")
-
-        cam_form.addRow("Nguồn Camera:", self.edit_cam_source)
-        cam_form.addRow("FPS Thiết lập:", self.spin_cam_fps)
-        cam_form.addRow("Tần suất xử lý (N):", self.spin_frame_skip)
-
-        # 2. Nhóm AI Engine
+        # 1. Nhóm AI Engine
         self._group_ai = self._create_group("🧠  CẤU HÌNH NHẬN DẠNG (AI)")
         ai_form = QFormLayout(self._group_ai)
         self._set_form_style(ai_form)
 
-        self.spin_threshold = QDoubleSpinBox()
-        self.spin_threshold.setRange(0.1, 0.9)
-        self.spin_threshold.setSingleStep(0.05)
-        self.cmb_det_size = QComboBox()
-        self.cmb_det_size.addItems(["320x320 (Nhanh)", "640x640 (Chuẩn)"])
-        self.check_gpu = QCheckBox("Sử dụng NVIDIA GPU (CUDA)")
+        # Helper to create advice label
+        def help_lbl(text):
+            lbl = QLabel(text)
+            lbl.setStyleSheet(f"font-size: 11px; color: {Colors.TEXT_DARK}; font-style: italic; margin-bottom: 5px;")
+            return lbl
 
-        ai_form.addRow("Ngưỡng nhận diện:", self.spin_threshold)
+        self.spin_threshold = QDoubleSpinBox()
+        self.spin_threshold.setRange(0.1, 0.95)
+        self.spin_threshold.setSingleStep(0.05)
+        ai_form.addRow("Ngưỡng nhận dạng:", self.spin_threshold)
+        ai_form.addRow("", help_lbl("Độ tin cậy tối thiểu (0.60 là chuẩn). Cao hơn = chính xác hơn nhưng khó nhận diện hơn."))
+        
+        self.spin_min_face = QDoubleSpinBox()
+        self.spin_min_face.setRange(0.3, 0.9)
+        self.spin_min_face.setSingleStep(0.05)
+        ai_form.addRow("Độ nét khuôn mặt:", self.spin_min_face)
+        ai_form.addRow("", help_lbl("Chỉ nhận diện khi mặt rõ nét. Giúp tránh báo danh nhầm do ảnh mờ."))
+
+        self.cmb_det_size = QComboBox()
+        self.cmb_det_size.addItems(["320x320 (Nhanh)", "640x640 (Chính xác)"])
         ai_form.addRow("Kích thước quét:", self.cmb_det_size)
+        ai_form.addRow("", help_lbl("640x640 giúp nhận diện tốt hơn ở khoảng cách xa."))
+        
+        self.spin_frame_skip = QSpinBox()
+        self.spin_frame_skip.setRange(1, 10)
+        ai_form.addRow("Tần suất xử lý (N):", self.spin_frame_skip)
+        ai_form.addRow("", help_lbl("Xử lý 1 hình sau mỗi N khung hình. Tăng N để giảm tải cho máy (đỡ nóng)."))
+        
+        self.check_gpu = QCheckBox("Sử dụng NVIDIA GPU (CUDA)")
         ai_form.addRow("Tăng tốc phần cứng:", self.check_gpu)
 
-        # 3. Nhóm Database
+        # 2. Nhóm Database
         self._group_db = self._create_group("🗄️  CƠ SỞ DỮ LIỆU (SQL SERVER)")
         db_form = QFormLayout(self._group_db)
         self._set_form_style(db_form)
@@ -92,11 +94,11 @@ class SettingsPage(QWidget):
         self.check_win_auth = QCheckBox("Sử dụng Windows Authentication")
 
         db_form.addRow("Địa chỉ Server:", self.edit_db_server)
+        db_form.addRow("", help_lbl("Sử dụng '.' cho máy cục bộ hoặc địa chỉ IP của server."))
         db_form.addRow("Tên Database:", self.edit_db_name)
         db_form.addRow("Xác thực:", self.check_win_auth)
 
-        # Add groups to container
-        self.container_layout.addWidget(self._group_camera)
+        # Add groups
         self.container_layout.addWidget(self._group_ai)
         self.container_layout.addWidget(self._group_db)
         self.container_layout.addStretch()
@@ -104,20 +106,13 @@ class SettingsPage(QWidget):
         scroll.setWidget(container)
         root.addWidget(scroll)
 
-        # --- Action Buttons ---
+        # --- Footer Actions ---
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
         self.btn_save = QPushButton("💾  Lưu cấu hình")
-        self.btn_save.setFixedSize(160, 45)
-        self.btn_save.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_save.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {Colors.CYAN}; color: white;
-                border-radius: 8px; font-weight: 800; font-size: 14px;
-            }}
-            QPushButton:hover {{ background-color: {Colors.CYAN_DIM}; }}
-        """)
+        self.btn_save.setFixedSize(180, 45)
+        self.btn_save.setStyleSheet(f"background: {Colors.CYAN}; color: white; border-radius: 8px; font-weight: 800;")
         self.btn_save.clicked.connect(self._save_settings)
         
         btn_layout.addWidget(self.btn_save)
@@ -138,34 +133,49 @@ class SettingsPage(QWidget):
     def _set_form_style(self, form: QFormLayout):
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form.setContentsMargins(20, 20, 20, 20)
-        form.setSpacing(15)
+        form.setSpacing(10)
 
     def _load_current_settings(self):
-        # Load từ config.py (vốn đã load từ .env hoặc mặc định)
-        self.edit_cam_source.setText(str(camera_config.source))
-        self.spin_cam_fps.setValue(camera_config.fps)
-        self.spin_frame_skip.setValue(camera_config.process_every_n_frames)
-
+        # AI
         self.spin_threshold.setValue(ai_config.recognition_threshold)
+        self.spin_min_face.setValue(ai_config.min_face_det_score)
         self.cmb_det_size.setCurrentIndex(1 if ai_config.det_size[0] == 640 else 0)
+        self.spin_frame_skip.setValue(camera_config.process_every_n_frames)
         self.check_gpu.setChecked(ai_config.gpu_ctx_id >= 0)
 
+        # DB
         self.edit_db_server.setText(db_config.server)
         self.edit_db_name.setText(db_config.database)
         self.check_win_auth.setChecked(db_config.use_windows_auth)
 
     def _save_settings(self):
-        # Trong thực tế, bạn nên ghi các giá trị này vào file .env
-        # Ở đây tôi hướng dẫn cập nhật nóng vào bộ nhớ ứng dụng
         try:
-            camera_config.source = self.edit_cam_source.text()
-            camera_config.process_every_n_frames = self.spin_frame_skip.value()
+            updates = {
+                "AI_THRESHOLD": f"{self.spin_threshold.value():.2f}",
+                "MIN_FACE_SCORE": f"{self.spin_min_face.value():.2f}",
+                "CAM_PROCESS_N": self.spin_frame_skip.value(),
+                "DB_SERVER": self.edit_db_server.text(),
+                "DB_NAME": self.edit_db_name.text(),
+            }
+            
+            # Cập nhật nóng vào bộ nhớ
             ai_config.recognition_threshold = self.spin_threshold.value()
-            db_config.server = self.edit_db_server.text()
+            ai_config.min_face_det_score = self.spin_min_face.value()
+            camera_config.process_every_n_frames = self.spin_frame_skip.value()
             
-            # TODO: Triển khai hàm ghi file .env để lưu vĩnh viễn
-            
-            QMessageBox.information(self, "Thành công", "Đã cập nhật cấu hình.\nMột số thay đổi yêu cầu khởi động lại ứng dụng.")
-            logger.info("Người dùng đã cập nhật cài đặt hệ thống.")
+            # Lưu vào .env
+            if save_to_env(updates):
+                QMessageBox.information(self, "Thành công", 
+                    "Đã lưu cấu hình.\n\n"
+                    "Lưu ý: Thay đổi về GPU hoặc Database sẽ có hiệu lực sau khi khởi động lại.")
+            else:
+                QMessageBox.warning(self, "Lỗi", "Không thể ghi file .env.")
+
         except Exception as e:
             QMessageBox.critical(self, "Lỗi", f"Không thể lưu: {str(e)}")
+            logger.error(f"Settings Save Error: {e}")
+
+
+        except Exception as e:
+            QMessageBox.critical(self, "Lỗi", f"Không thể lưu: {str(e)}")
+            logger.error(f"Settings Save Error: {e}")

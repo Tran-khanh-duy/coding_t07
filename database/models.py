@@ -160,6 +160,8 @@ class EmbeddingCache:
     student_codes: list = field(default_factory=list)
     full_names:    list = field(default_factory=list)
     class_ids:     list = field(default_factory=list)
+    class_names:   list = field(default_factory=list)
+    class_codes:   list = field(default_factory=list)
     embeddings:    Optional[np.ndarray] = None   # shape (N, 512)
 
     @property
@@ -175,6 +177,8 @@ class EmbeddingCache:
         self.student_codes.clear()
         self.full_names.clear()
         self.class_ids.clear()
+        self.class_names.clear()
+        self.class_codes.clear()
         self.embeddings = None
 
     def __repr__(self):

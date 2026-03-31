@@ -59,14 +59,18 @@ class DatabaseConnection:
                 )
             except pyodbc.Error as e:
                 logger.error(f"Không thể kết nối SQL Server: {e}")
-                raise ConnectionError(
-                    f"Lỗi kết nối SQL Server.\n"
-                    f"Kiểm tra:\n"
-                    f"  1. SQL Server Express đang chạy\n"
-                    f"  2. Server name: {db_config.server}\n"
-                    f"  3. Database '{db_config.database}' đã tồn tại\n"
-                    f"Chi tiết: {e}"
+                
+                # Cung cấp gợi ý sửa lỗi cụ thể hơn
+                error_msg = (
+                    f"Lỗi kết nối SQL Server (Server: {db_config.server}, Database: {db_config.database}).\n"
+                    f"Chi tiết kỹ thuật: {e}\n\n"
+                    f"Hướng dẫn khắc phục:\n"
+                    f"  1. Đảm bảo dịch vụ SQL Server (MSSQLSERVER hoặc SQLEXPRESS) đang chạy.\n"
+                    f"  2. Kiểm tra chuỗi kết nối trong config.py hoặc biến môi trường DB_SERVER.\n"
+                    f"  3. Thử đổi server thành '.' hoặc '(local)' nếu đang dùng máy cá nhân.\n"
+                    f"  4. Đảm bảo Database '{db_config.database}' đã được khởi tạo."
                 )
+                raise ConnectionError(error_msg)
         return self._local.conn
 
     # ─── Public API ────────────────────────────

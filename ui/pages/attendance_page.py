@@ -20,7 +20,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ui.styles.theme import Colors, card_style, combo_style
 from ui.widgets.camera_preview import CameraPreviewWidget
-from config import CAMERAS
+from database.repositories import camera_repo, class_repo
+from config import app_config
 
 
 # ─────────────────────────────────────────────
@@ -125,6 +126,8 @@ class AttendanceWorker(QThread):
                                 "student_id":    event.student_id,
                                 "student_code":  event.student_code,
                                 "full_name":     event.full_name,
+                                "class_name":    event.class_name,
+                                "class_code":    event.class_code,
                                 "time_str":      event.time_str,
                                 "similarity":    event.similarity,
                                 "snapshot_path": event.snapshot_path,
@@ -216,14 +219,15 @@ class AttendanceListItem(QWidget):
         info_col.setSpacing(4)
         info_col.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        name_lbl = QLabel(event["full_name"])
+        display_name = f"{event['full_name']} - {event['class_code']}" if event.get("class_code") else event["full_name"]
+        name_lbl = QLabel(display_name)
         name_lbl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {Colors.TEXT}; border: none; background: transparent;")
         
-        code_lbl = QLabel(event["student_code"])
-        code_lbl.setStyleSheet(f"font-size: 12px; color: {Colors.TEXT_DIM}; border: none; background: transparent;")
+        detail_lbl = QLabel(f"{event['student_code']}")
+        detail_lbl.setStyleSheet(f"font-size: 12px; color: {Colors.TEXT_DIM}; border: none; background: transparent;")
         
         info_col.addWidget(name_lbl)
-        info_col.addWidget(code_lbl)
+        info_col.addWidget(detail_lbl)
         layout.addLayout(info_col, 1)
 
         # Score + Time
@@ -381,7 +385,7 @@ class AttendancePage(QWidget):
         sc_layout.addWidget(sc_title)
 
         # Chọn lớp
-        cls_lbl = QLabel("Lớp học")
+        cls_lbl = QLabel("Lớp học *")
         cls_lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; border: none; background: transparent; padding-top: 6px;")
         self._cmb_class = QComboBox()
         self._cmb_class.setStyleSheet(combo_style())
@@ -393,8 +397,7 @@ class AttendancePage(QWidget):
         cam_lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; border: none; background: transparent; padding-top: 6px;")
         self._cmb_camera = QComboBox()
         self._cmb_camera.setStyleSheet(combo_style())
-        for cam in CAMERAS:
-            self._cmb_camera.addItem(cam['name'], cam['source'])
+        self._refresh_cameras()
         sc_layout.addWidget(cam_lbl)
         sc_layout.addWidget(self._cmb_camera)
 
@@ -444,7 +447,6 @@ class AttendancePage(QWidget):
         sc_layout.addWidget(subj_lbl)
         sc_layout.addLayout(row_dt)
         sc_layout.addStretch()
-
         layout.addWidget(session_card)
 
         # ── Nút Bắt đầu / Kết thúc ──
@@ -566,6 +568,22 @@ class AttendancePage(QWidget):
         elif hour < 21: idx = 2
         else: idx = 3
         self._inp_subject.setCurrentIndex(idx)
+
+    def _refresh_cameras(self):
+        """Tải danh sách camera từ CSDL."""
+        try:
+            self._cmb_camera.clear()
+            # camera_repo đã được import ở đầu file
+            cameras = camera_repo.get_all(active_only=True)
+            for cam in cameras:
+                # Dùng rtsp_url làm source (có thể là "0" cho webcam)
+                self._cmb_camera.addItem(cam.camera_name, cam.rtsp_url)
+            
+            if self._cmb_camera.count() == 0:
+                self._cmb_camera.addItem("Chưa cấu hình Camera", "0")
+        except Exception as e:
+            logger.error(f"Error loading cameras: {e}")
+            self._cmb_camera.addItem("Lỗi tải Camera", "0")
 
     def _load_classes(self):
         self._cmb_class.clear()
@@ -697,7 +715,7 @@ class AttendancePage(QWidget):
             self._list_scroll.verticalScrollBar().maximum()
         ))
         
-        self._show_toast(f"✅  {event['full_name']}  ({event['similarity']*100:.1f}%)")
+        self._show_toast(f"✅  {event['full_name']} - {event['class_code']}  ({event['similarity']*100:.1f}%)")
 
     def _update_stats_ui(self, stats: dict):
         if "total_recorded" in stats:
@@ -745,5 +763,6 @@ class AttendancePage(QWidget):
 
     def showEvent(self, event):
         if self._worker and self._worker._paused: self._worker.resume()
+        self._refresh_cameras()
         self._load_classes()
         super().showEvent(event)

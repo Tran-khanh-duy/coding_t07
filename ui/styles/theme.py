@@ -25,6 +25,7 @@ class Colors:
     GREEN_DIM   = "#059669"
     RED         = "#EF4444"   # Error
     RED_DIM     = "#DC2626"
+    RED_LT      = "#FEE2E2"
     ORANGE      = "#F59E0B"   # Warning
     PURPLE      = "#8B5CF6"   # Info
 

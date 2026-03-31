@@ -153,9 +153,9 @@ class StudentRepository:
         try:
             db = get_db()
             # Xóa lịch sử điểm danh trước để tránh lỗi Foreign Key
-            db.execute("DELETE FROM AttendanceRecords WHERE student_id = ?", (student_id,))
+            db.execute("DELETE FROM AttendanceRecords WHERE student_id = ?", (student_id,), commit=True)
             # Xóa dữ liệu khuôn mặt liên quan
-            db.execute("DELETE FROM FaceEmbeddings WHERE student_id = ?", (student_id,))
+            db.execute("DELETE FROM FaceEmbeddings WHERE student_id = ?", (student_id,), commit=True)
             # Cuối cùng xóa học viên
             db.execute(
                 "DELETE FROM Students WHERE student_id = ?",
@@ -205,20 +205,16 @@ class FaceEmbeddingRepository:
         SP sp_GetAllEmbeddings trả về 4 cols:
             (student_id, student_code, full_name, embedding_vector)
         """
-        try:
-            rows = get_db().call_procedure("sp_GetAllEmbeddings")
-            if not rows:
-                raise Exception("empty")
-        except Exception:
-            rows = get_db().execute(
-                """
-                SELECT s.student_id, s.student_code, s.full_name, fe.embedding_vector, s.class_id
-                FROM FaceEmbeddings fe
-                JOIN Students s ON s.student_id = fe.student_id
-                WHERE fe.is_active = 1
-                ORDER BY fe.student_id
-                """
-            )
+        rows = get_db().execute(
+            """
+            SELECT s.student_id, s.student_code, s.full_name, fe.embedding_vector, s.class_id, c.class_name, c.class_code
+            FROM FaceEmbeddings fe
+            JOIN Students s ON s.student_id = fe.student_id
+            LEFT JOIN Classes c ON c.class_id = s.class_id
+            WHERE fe.is_active = 1
+            ORDER BY fe.student_id
+            """
+        )
 
         if not rows:
             logger.warning("Không có embedding nào trong database!")
@@ -227,8 +223,7 @@ class FaceEmbeddingRepository:
         cache = EmbeddingCache()
         vecs  = []
         for row in rows:
-            student_id, student_code, full_name, emb_bytes = row[:4]
-            class_id = row[4] if len(row) > 4 else 0
+            student_id, student_code, full_name, emb_bytes, class_id, class_name, class_code = row[:7]
             
             vec = np.frombuffer(emb_bytes, dtype=np.float32).copy()
             if vec.shape[0] != 512:
@@ -238,6 +233,8 @@ class FaceEmbeddingRepository:
             cache.student_codes.append(str(student_code or ""))
             cache.full_names.append(str(full_name or ""))
             cache.class_ids.append(int(class_id or 0))
+            cache.class_names.append(str(class_name or ""))
+            cache.class_codes.append(str(class_code or ""))
             vecs.append(vec)
 
         if vecs:
@@ -311,6 +308,20 @@ class CameraRepository:
             commit=True,
         )
         return rows[0][0] if rows else -1
+
+    def update(self, camera_id: int, **kwargs) -> bool:
+        allowed = {"camera_name", "location_desc", "rtsp_url", "ip_address", "resolution", "is_active"}
+        cols = {k: v for k, v in kwargs.items() if k in allowed}
+        if not cols: return False
+        
+        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        params = list(cols.values()) + [camera_id]
+        get_db().execute(f"UPDATE Cameras SET {set_clause} WHERE camera_id = ?", tuple(params), commit=True)
+        return True
+
+    def delete(self, camera_id: int) -> bool:
+        get_db().execute("DELETE FROM Cameras WHERE camera_id = ?", (camera_id,), commit=True)
+        return True
 
 
 # ══════════════════════════════════════════════

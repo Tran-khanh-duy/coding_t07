@@ -26,7 +26,7 @@ for _dir in [MODELS_DIR, SNAPSHOTS_DIR, LOGS_DIR, REPORTS_DIR]:
 # ─────────────────────────────────────────────
 @dataclass
 class DatabaseConfig:
-    server:   str = os.getenv("DB_SERVER",   r"KHAIPOGBA")
+    server:   str = os.getenv("DB_SERVER",   r".")
     database: str = os.getenv("DB_NAME",     "FaceAttendanceDB")
     driver:   str = os.getenv("DB_DRIVER",   "ODBC Driver 17 for SQL Server")
     use_windows_auth: bool = True
@@ -52,7 +52,7 @@ class DatabaseConfig:
 # ─────────────────────────────────────────────
 @dataclass
 class AIConfig:
-    model_name:       str   = "buffalo_l"
+    model_name:       str   = "buffalo_s"  # Chuyển sang model nhỏ cho Edge
     model_pack_dir:   Path  = MODELS_DIR
 
     # Sử dụng GPU
@@ -65,15 +65,15 @@ class AIConfig:
 
     # TRẢ LẠI CHUẨN ĐỘ PHÂN GIẢI CAO: Giữ (640, 640) để model quét kỹ hơn,
     # bắt được khuôn mặt ở xa và góc nghiêng tốt hơn, đảm bảo độ chính xác >98%.
-    det_size:         tuple = (640, 640)
+    det_size:         tuple = (320, 320)  # Giảm độ phân giải để tăng tốc độ phát hiện
 
-    recognition_threshold: float = 0.60  # Nâng từ 0.50 → giảm nhận diện nhầm
-
+    recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.60"))
     min_enroll_photos:  int = 5
     max_enroll_photos:  int = 10
     embedding_size:   int   = 512
-    attendance_cooldown_sec: int = 60
-    min_face_det_score: float = 0.70  # Nâng từ 0.60 → chỉ nhận khuôn mặt rõ nét
+    attendance_cooldown_sec: int = int(os.getenv("ATTENDANCE_COOLDOWN", "60"))
+    min_face_det_score: float = float(os.getenv("MIN_FACE_SCORE", "0.70"))
+
 
 # ─────────────────────────────────────────────
 #  CAMERA (CẤU HÌNH SERVER)
@@ -87,9 +87,8 @@ class CameraConfig:
     reconnect_delay_sec: int = 3
     max_reconnect_tries: int = 5
 
-    # TĂNG TẦN SUẤT XỬ LÝ: Xử lý các khung hình để camera mượt nhất có thể.
-    # Đủ dày đặc để không bỏ lót bất kỳ ai lướt ngang qua.
-    process_every_n_frames: int = 1
+    # TĂNG KHOẢNG CÁCH XỬ LÝ: Skip khung hình để giảm tải CPU/GPU
+    process_every_n_frames: int = int(os.getenv("CAM_PROCESS_N", "3"))
 
     @property
     def is_ip_camera(self) -> bool:
@@ -103,7 +102,7 @@ CAMERAS: list[dict] = [
 @dataclass
 class ReportConfig:
     output_dir:        Path  = REPORTS_DIR
-    institution_name:  str   = "Trung tâm Đào tạo XYZ"
+    institution_name:  str   = os.getenv("INSTITUTION_NAME", "Trung tâm Đào tạo XYZ")
     institution_logo:  str   = ""
     excel_template:    str   = "default"
     date_format:       str   = "%d/%m/%Y"
@@ -125,7 +124,7 @@ class AppConfig:
 class AntiSpoofConfig:
     model_dir: Path = BASE_DIR / "Silent-Face-Anti-Spoofing-master" / "resources" / "anti_spoof_models"
     device_id: int = 0  # GPU ID hoặc -1 cho CPU
-    threshold: float = 0.90 # Ngưỡng xác định là mặt thật (tối đa 1.0)
+    threshold: float = 0.80 # Ngưỡng xác định là mặt thật (tối đa 1.0)
 
 db_config     = DatabaseConfig()
 ai_config     = AIConfig()

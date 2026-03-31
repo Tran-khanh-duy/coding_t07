@@ -30,6 +30,8 @@ class AttendanceEvent:
     student_code:  str
     full_name:     str
     class_id:      int
+    class_name:    str
+    class_code:    str
     check_in_time: datetime
     similarity:    float
     snapshot_path: Optional[str]
@@ -94,11 +96,13 @@ class AttendanceService:
                 except Exception as e:
                     logger.error(f"Lỗi lưu snapshot ngầm: {e}")
 
-            # 2. Ghi vào SQL Server (Async)
-            success = record_repo.record_attendance(
+            # 2. Ghi vào SQL Server (Dùng SyncService cho Edge Processing)
+            from services.sync_service import sync_service
+            success = sync_service.save_offline(
                 session_id=event.session_id,
                 student_id=event.student_id,
-                recognition_score=event.similarity,
+                check_in_time=event.check_in_time,
+                score=event.similarity,
                 snapshot_path=snapshot_path,
                 camera_id=camera_id,
             )
@@ -106,7 +110,7 @@ class AttendanceService:
             if success:
                 self._stats["total_recorded"] += 1
             else:
-                logger.error(f"Ghi DB thất bại cho student_id={event.student_id}")
+                logger.error(f"Lưu offline thất bại cho student_id={event.student_id}")
 
             self._db_queue.task_done()
 
@@ -218,6 +222,8 @@ class AttendanceService:
             student_code=result.student_code,
             full_name=result.full_name,
             class_id=result.class_id,
+            class_name=result.class_name or "",
+            class_code=result.class_code or "",
             check_in_time=datetime.now(),
             similarity=result.similarity,
             snapshot_path=None,

@@ -60,6 +60,8 @@ class RecognitionResult:
     student_code:   Optional[str]
     full_name:      Optional[str]
     class_id:       Optional[int]
+    class_name:     Optional[str]
+    class_code:     Optional[str]
     similarity:     float           # Cosine similarity (0.0 - 1.0)
     
     # Anti-Spoofing
@@ -72,8 +74,9 @@ class RecognitionResult:
     @property
     def display_name(self) -> str:
         if self.recognized:
-            return f"{self.full_name} ({self.similarity*100:.1f}%)"
-        return f"Khach / La ({self.similarity*100:.1f}%)"
+            cls = f" - {self.class_code}" if self.class_code else ""
+            return f"{self.full_name}{cls} ({self.similarity*100:.1f}%)"
+        return f"Khách / Lạ ({self.similarity*100:.1f}%)"
 
     @property
     def box_color(self) -> tuple:
@@ -153,16 +156,27 @@ class FaceEngine:
                 logger.info(f"Đang load model GPU '{ai_config.model_name}'...")
                 t0 = time.perf_counter()
 
-                self._app = FaceAnalysis(
-                    name=ai_config.model_name,
-                    root=str(ai_config.model_pack_dir),
-                    providers=['CPUExecutionProvider'],
-                )
-                
-                self._app.prepare(
-                    ctx_id=ai_config.gpu_ctx_id,
-                    det_size=ai_config.det_size,
-                )
+                try:
+                    self._app = FaceAnalysis(
+                        name=ai_config.model_name,
+                        root=str(ai_config.model_pack_dir),
+                        providers=ai_config.onnx_providers,
+                    )
+                    self._app.prepare(
+                        ctx_id=ai_config.gpu_ctx_id,
+                        det_size=ai_config.det_size,
+                    )
+                except Exception as e:
+                    logger.warning(f"CUDA loading failed ({e}), falling back to CPU...")
+                    self._app = FaceAnalysis(
+                        name=ai_config.model_name,
+                        root=str(ai_config.model_pack_dir),
+                        providers=['CPUExecutionProvider'],
+                    )
+                    self._app.prepare(
+                        ctx_id=-1, # Force CPU
+                        det_size=ai_config.det_size,
+                    )
 
                 elapsed = (time.perf_counter() - t0) * 1000
                 self._model_loaded = True
@@ -239,7 +253,7 @@ class FaceEngine:
                 RecognitionResult(
                     bbox=face.bbox, det_score=face.det_score,
                     recognized=False, student_id=None, student_code=None,
-                    full_name=None, class_id=None, similarity=0.0
+                    full_name=None, class_id=None, class_name=None, class_code=None, similarity=0.0
                 )
                 for face in faces
             ]
@@ -315,6 +329,8 @@ class FaceEngine:
 
             if is_above_threshold and is_winner:
                 cid = cache.class_ids[student_cache_idx] if cache.class_ids else None
+                cname = cache.class_names[student_cache_idx] if cache.class_names else None
+                ccode = cache.class_codes[student_cache_idx] if cache.class_codes else None
                 result_map[orig_idx] = RecognitionResult(
                     bbox=face.bbox,
                     det_score=face.det_score,
@@ -323,6 +339,8 @@ class FaceEngine:
                     student_code=cache.student_codes[student_cache_idx],
                     full_name=cache.full_names[student_cache_idx],
                     class_id=cid,
+                    class_name=cname,
+                    class_code=ccode,
                     similarity=best_score,
                 )
             else:
@@ -331,7 +349,7 @@ class FaceEngine:
                     bbox=face.bbox,
                     det_score=face.det_score,
                     recognized=False,
-                    student_id=None, student_code=None, full_name=None, class_id=None,
+                    student_id=None, student_code=None, full_name=None, class_id=None, class_name=None, class_code=None,
                     similarity=best_score,
                 )
 
