@@ -1,0 +1,61 @@
+# Environment & Dependencies
+.venv/
+venv/
+env/
+env_face/
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.ipynb_checkpoints/
+
+# AI Models & Large Weights
+# Note: GitHub blocks files > 100MB. Consider Git LFS for large models.
+models/
+**/models/
+*.pth
+*.pt
+*.onnx
+*.h5
+*.dat
+*.weights
+*.bin
+*.ptl
+*.tflite
+*.pb
+
+# Database & Sensitive Files
+*.db
+*.sqlite
+*.sqlite3
+*.mdf
+*.ldf
+.env
+.env.*
+secrets.json
+
+# Archive & Distribution
+*.zip
+*.tar
+*.gz
+*.7z
+dist/
+build/
+*.egg-info/
+
+# Logs & Temporary Files
+logs/
+*.log
+temp/
+tmp/
+
+# OS & IDE
+.vscode/
+.idea/
+.vs/
+bin/
+obj/
+*.user
+.DS_Store
+Thumbs.db
+desktop.ini
