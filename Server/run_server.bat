@@ -20,12 +20,8 @@ if %errorlevel% neq 0 (
 set PY_EXE=python
 if exist .venv\Scripts\python.exe (
     set PY_EXE=.venv\Scripts\python.exe
-    echo [INFO] Su dung moi truong ao: .venv
 ) else if exist venv\Scripts\python.exe (
     set PY_EXE=venv\Scripts\python.exe
-    echo [INFO] Su dung moi truong ao: venv
-) else (
-    echo [INFO] Su dung Python he thong.
 )
 
 :: 3. Tao cac thu muc can thiet
@@ -34,27 +30,58 @@ if not exist "logs" mkdir logs
 if not exist "assets\snapshots" mkdir assets\snapshots
 if not exist "reports\output" mkdir reports\output
 
-:: 4. Load bien moi truong tu .env.server
-if exist ".env.server" (
-    echo [INFO] Dang load cau hinh tu .env.server
-)
-
-:: 5. Khoi dong API Server (Chay trong cua so moi)
+:menu
+cls
+color 0b
+echo ==============================================================================
+echo                 FACEATTEND SERVER - TRUNG TAM ĐIEU KHIEN
+echo ==============================================================================
 echo.
-echo [1/2] Dang khoi dong API Server (Port: 8000)...
-echo [HINT] Cua so nay se hien thi log ket noi tu cac Edge Box.
-start "FaceAttend API Server" cmd /k "title [SERVER] API Server && %PY_EXE% api_server.py"
+echo [THONG TIN CAU HINH HIEN TAI]
+if exist ".env.server" (
+    echo   Cau hinh: .env.server tim thay.
+) else (
+    echo   [CANH BAO] Khong tim thay file .env.server! 
+    echo   Dang dung cau hinh mac dinh hoac ban nen tao file de chay an toan nhat.
+)
+echo.
 
-:: 6. Cho Server khoi dong (3 giay)
+:: TU DONG KHOI DONG SERVER BO QUA MENU
+goto run_server
+
+:run_test
+cls
+color 0a
+echo ============================================================
+echo   DANG CHAY TIEU TRINH QUET CAMERA IP...
+echo ============================================================
+%PY_EXE% test_ip_camera.py
+echo.
+pause
+goto menu
+
+:run_server
+cls
+color 0b
+echo ============================================================
+echo   DANG KHOI DONG HE THONG SERVER...
+echo ============================================================
+echo.
+
+echo [1/2] Dang khoi dong API Server (Port: 8000)...
+echo [HINT] Cua so moi se xuat hien de hien loi hoac log ket noi tu Edge Box.
+start "FaceAttend API Server" cmd /k "title [SERVER] API Lua Chon && %PY_EXE% api_server.py"
+
+:: Cho API Server khoi dong (3 giay)
 timeout /t 3 /nobreak >nul
 
-:: 7. Khoi dong Giao dien chinh (UI)
 echo.
-echo [2/2] Dang khoi dong Giao dien quan ly (PyQt6)...
+echo [2/2] Dang khoi dong Giao dien quan ly chinh (PyQt6)...
 %PY_EXE% main.py
 
 echo.
 echo ============================================================
-echo [DONE] Server da dung. Cam on ban da su dung!
+echo [DONE] Server da dung hoat dong.
 echo ============================================================
 pause
+goto menu

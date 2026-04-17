@@ -27,13 +27,14 @@ if env_file.exists():
     load_dotenv(env_file, override=True)
 
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT.parent / "Server"))
 
 # Tạo các thư mục cần thiết
 for folder in ["logs", "models", "database"]:
     (ROOT / folder).mkdir(parents=True, exist_ok=True)
 
 from config import edge_config
-from services.headless_processor import headless_processor
+from headless_processor import headless_processor
 from edge_client import edge_client
 
 def run_headless():

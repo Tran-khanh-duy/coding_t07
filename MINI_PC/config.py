@@ -135,13 +135,15 @@ class EdgeConfig:
     """Cấu hình khi chạy ở chế độ Edge (Mini PC)."""
     server_url:           str  = os.getenv("EDGE_SERVER_URL", "http://192.168.10.100:8000")
     api_key:              str  = os.getenv("EDGE_API_KEY", "faceattend_secret_2026")
-    camera_id:            str  = os.getenv("EDGE_CAMERA_ID", "CAM_01")
-    camera_source:        str  = os.getenv("EDGE_CAMERA_SOURCE", "0")  # "0" = webcam, "rtsp://..." = IP cam
+    
+    # Cấu hình RTSP
+    camera_id:            str  = os.getenv("EDGE_CAMERA_ID", "")
+    camera_source:        str  = os.getenv("EDGE_CAMERA_SOURCE", "")  
     device_name:          str  = os.getenv("EDGE_DEVICE_NAME", "Edge Box 01")
 
     # Chu kỳ đồng bộ
-    sync_interval_sec:    int  = int(os.getenv("EDGE_SYNC_INTERVAL", "30"))
-    embedding_refresh_min: int = int(os.getenv("EDGE_EMBED_REFRESH", "10"))  # Reload embeddings mỗi N phút
+    sync_interval_sec:    int  = int(os.getenv("EDGE_SYNC_INTERVAL", "5"))
+    embedding_refresh_min: int = int(os.getenv("EDGE_EMBED_REFRESH", "10")) 
 
     # Cooldown & Hiệu suất
     attendance_cooldown:  int  = int(os.getenv("EDGE_COOLDOWN", "60"))
@@ -151,6 +153,25 @@ class EdgeConfig:
     fullscreen:           bool = os.getenv("EDGE_FULLSCREEN", "true").lower() == "true"
     show_fps:             bool = os.getenv("EDGE_SHOW_FPS", "true").lower() == "true"
     auto_start:           bool = os.getenv("EDGE_AUTO_START", "true").lower() == "true"
+
+    camera_list: list = field(default_factory=list)
+
+    def __post_init__(self):
+        ids = [i.strip() for i in self.camera_id.split(",") if i.strip()]
+        sources = [s.strip() for s in self.camera_source.split(",") if s.strip()]
+        
+        parsed_list = []
+        for i in range(min(len(ids), len(sources))):
+            if sources[i]:
+                parsed_list.append({
+                    "id": ids[i],
+                    "name": f"Camera {ids[i]}",
+                    "source": sources[i]
+                })
+        
+        # Gán đè danh sách đã parse vào biến camera_list
+        self.camera_list = parsed_list
+
 
 db_config     = DatabaseConfig()
 ai_config     = AIConfig()

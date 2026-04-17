@@ -34,10 +34,14 @@ class SystemState:
     class_id = None
     target_camera = None
     
-    # Mới: Lưu trữ khung hình từ Mini PC
-    latest_frame: Optional[bytes] = None
-    frame_timestamp: float = 0.0
+    # Mới: Lưu trữ khung hình và detections từ Mini PC
+    latest_frames = {}      # {camera_id: image_bytes}
+    latest_detections = {}  # {camera_id: list_of_detections}
+    frame_timestamp = 0.0
     frame_lock = threading.Lock()
+    
+    # [NEW] Trạng thái các Mini PC (camera động)
+    edge_status_data = {}  # {device_name: {"cameras": [0,1], "last_seen": timestamp}}
 
 system_state = SystemState()
 
@@ -168,6 +172,8 @@ async def set_system_command(
 # ── Truyền tải khung hình (Remote Camera) ──────
 class FramePayload(BaseModel):
     image_b64: str
+    detections: Optional[list] = [] # Danh sách [x1, y1, x2, y2, label, color_type]
+    camera_id: str = "CAM_01"
 
 @app.post("/api/system/frame")
 async def upload_frame(
@@ -176,23 +182,75 @@ async def upload_frame(
 ):
     """Mini PC upload khung hình JPEG (base64) lên server."""
     try:
+        # Giải mã base64
         img_data = base64.b64decode(payload.image_b64)
+        
+        # Log chẩn đoán dữ liệu (Debug)
+        # logger.debug(f"📥 Frame from {payload.camera_id}: {len(img_data)} bytes | {len(payload.detections)} faces")
+        
+        if len(img_data) < 100:
+             logger.warning(f"⚠️ Nhận ảnh quá nhỏ ({len(img_data)} bytes) từ {payload.camera_id}")
+             
         with system_state.frame_lock:
-            system_state.latest_frame = img_data
+            system_state.latest_frames[payload.camera_id] = img_data
+            system_state.latest_detections[payload.camera_id] = payload.detections
             system_state.frame_timestamp = datetime.now().timestamp()
+            
+        # Thêm log để người dùng thấy tín hiệu
+        logger.info(f"📥 Nhận khung hình từ: {payload.camera_id}")
+            
         return {"status": "ok"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/system/frame")
-async def get_frame():
+async def get_frame(camera_id: str = Query(..., description="ID của camera cần lấy hình")):
     """UI lấy khung hình mới nhất từ Mini PC."""
+    import json
     with system_state.frame_lock:
-        if system_state.latest_frame is None:
-            raise HTTPException(status_code=404, detail="No frame available")
+        frame = system_state.latest_frames.get(camera_id)
+        detections = system_state.latest_detections.get(camera_id, [])
+        if frame is None:
+            available = list(system_state.latest_frames.keys())
+            logger.warning(f"🔍 [404] UI yêu cầu {camera_id} nhưng Server chỉ có: {available}")
+            raise HTTPException(status_code=404, detail=f"No frame for {camera_id}")
         
-        # Có thể thêm kiểm tra stale nếu cần (ví dụ > 5s thì coi như mất kết nối)
-        return Response(content=system_state.latest_frame, media_type="image/jpeg")
+        # Chuyển detections sang JSON string rồi base64 để truyền qua Header
+        det_json = json.dumps(detections)
+        det_b64 = base64.b64encode(det_json.encode()).decode()
+
+        return Response(
+            content=frame, 
+            media_type="image/jpeg",
+            headers={"X-Face-Detections": det_b64}
+        )
+
+# ── Dynamic Edge Status ───────────────────────
+class EdgeStatusPayload(BaseModel):
+    device_name: str
+    camera_status: dict[str, bool] # { "0": True, "1": False, ... }
+    timestamp: str
+
+@app.post("/api/system/edge_status")
+async def update_edge_status(
+    payload: EdgeStatusPayload,
+    api_key: str = Security(verify_api_key)
+):
+    """Mini PC báo cáo danh sách camera hiện có."""
+    system_state.edge_status_data[payload.device_name] = {
+        "camera_status": payload.camera_status,
+        "last_seen": datetime.now().timestamp()
+    }
+    
+    # Thêm log để người dùng thấy tín hiệu Mini PC đang sống
+    logger.info(f"📡 Mini PC '{payload.device_name}' đã báo danh trạng thái.")
+        
+    return {"status": "ok"}
+
+@app.get("/api/system/edge_status")
+async def get_edge_status():
+    """UI lấy danh sách camera động từ các Mini PC."""
+    return system_state.edge_status_data
 
 # ── Lấy danh sách học viên ────────────────────
 @app.get("/api/students")
@@ -464,6 +522,6 @@ logging.getLogger("uvicorn").addFilter(EndpointFilter())
 if __name__ == "__main__":
     logger.info("=" * 60)
     logger.info("  FACEATTEND API SERVER v2.0")
-    logger.info("  Lắng nghe tại: http://0.0.0.0:8000")
+    logger.info("  Lắng nghe tại: http://0.0.0.0:9696")
     logger.info("=" * 60)
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("api_server:app", host="0.0.0.0", port=9696, reload=True)

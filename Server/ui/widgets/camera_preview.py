@@ -29,6 +29,7 @@ class CameraPreviewWidget(QWidget):
         self._status_text: str = "OFFLINE"
         self._status_color: str = Colors.RED
         self._show_hud = True
+        self._detections: list = [] # [[x1, y1, x2, y2, label, color_type], ...]
         
         # Hiệu ứng nhấp nháy cho đèn LIVE
         self._blink = True
@@ -41,6 +42,11 @@ class CameraPreviewWidget(QWidget):
             border-radius: 12px;
         """)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def set_detections(self, detections: list):
+        """Cập nhật danh sách tọa độ khuôn mặt."""
+        self._detections = detections or []
+        self.update()
 
     # ─── API Cập nhật ─────────────────────────
 
@@ -57,6 +63,11 @@ class CameraPreviewWidget(QWidget):
             self.update()
         except Exception as e:
             print(f"Lỗi hiển thị frame: {e}")
+
+    def update_frame_with_detections(self, frame: np.ndarray, detections: list = None):
+        """Cập nhật cả frame và danh sách khuôn mặt cùng lúc."""
+        self._detections = detections or []
+        self.update_frame(frame)
 
     def update_annotated_frame(self, frame: np.ndarray, latency_ms: float = 0):
         self._latency_ms = latency_ms
@@ -110,6 +121,10 @@ class CameraPreviewWidget(QWidget):
 
             if self._show_hud:
                 self._draw_hud(painter, rect)
+            
+            # 3. Vẽ Face Detections
+            if self._detections:
+                self._draw_face_boxes(painter, rect, x, y, scaled.width(), scaled.height())
         else:
             self._draw_placeholder(painter, rect)
 
@@ -163,10 +178,49 @@ class CameraPreviewWidget(QWidget):
             painter.setPen(QColor(Colors.GREEN if self._latency_ms < 150 else Colors.ORANGE))
             painter.drawText(rect.width() - tw - 30, 37, lat_text)
 
-        # --- D. Status Bar (Bottom Left) ---
+        self._draw_status_bar(painter, rect)
+
+    def _draw_status_bar(self, painter, rect):
         painter.setFont(QFont("Segoe UI", 11, QFont.Weight.Black))
         painter.setPen(QColor(self._status_color))
         painter.drawText(30, rect.height() - 35, f"STATUS: {self._status_text}")
+
+    def _draw_face_boxes(self, painter, rect, offset_x, offset_y, sw, sh):
+        """Vẽ các khung nhận diện khuôn mặt."""
+        if not self._detections: return
+        
+        # Tỷ lệ scale từ ảnh upload (640x...) sang kích thước hiển thị thực tế
+        scale_w = sw / 640
+        scale_h = scale_w
+        
+        for det in self._detections:
+            if len(det) < 4: continue
+            x1, y1, x2, y2 = det[0:4]
+            label = det[4] if len(det) > 4 else ""
+            color_type = det[5] if len(det) > 5 else "unknown"
+            
+            vx1 = int(x1 * scale_w) + offset_x
+            vy1 = int(y1 * scale_h) + offset_y
+            vx2 = int(x2 * scale_w) + offset_x
+            vy2 = int(y2 * scale_h) + offset_y
+            
+            color = QColor(Colors.GREEN) if color_type == "success" else QColor(Colors.RED)
+            if color_type == "unknown":
+                color = QColor(Colors.CYAN)
+            
+            pen = QPen(color, 2)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(vx1, vy1, vx2 - vx1, vy2 - vy1)
+            
+            if label:
+                painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+                tw = painter.fontMetrics().horizontalAdvance(label)
+                th = painter.fontMetrics().height()
+                painter.setBrush(color)
+                painter.drawRect(vx1, vy1 - th - 4, tw + 10, th + 4)
+                painter.setPen(QColor("#FFFFFF"))
+                painter.drawText(vx1 + 5, vy1 - 5, label)
 
     def _draw_placeholder(self, painter, rect):
         """Vẽ trạng thái khi chưa có camera."""

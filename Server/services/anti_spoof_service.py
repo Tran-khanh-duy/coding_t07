@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 from loguru import logger
 from pathlib import Path
+from config import anti_spoof_config
 
 try:
     import torch
@@ -36,7 +37,6 @@ except ImportError as e:
         # Nếu đã chủ động tắt thì chỉ log debug hoặc bỏ qua
         logger.debug("Anti-Spoofing đã bị tắt theo cấu hình.")
 
-from config import anti_spoof_config
 
 class AntiSpoofService:
     """

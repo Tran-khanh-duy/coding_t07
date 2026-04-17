@@ -18,6 +18,8 @@ import base64
 import sqlite3
 import threading
 import requests
+import cv2
+import os
 import numpy as np
 from datetime import datetime
 from loguru import logger
@@ -25,9 +27,15 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "Server"))
+
+# Tắt log nhiễu của OpenCV (index out of range)
+os.environ["OPENCV_LOG_LEVEL"] = "OFF"
+os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 
 from config import edge_config, ai_config, anti_spoof_config
 from database.models import EmbeddingCache
+from utils.camera_utils import detect_available_cameras, discover_network_cameras, generate_rtsp_links
 
 
 class EdgeClient:
@@ -48,6 +56,7 @@ class EdgeClient:
         # Trạng thái kết nối
         self._server_online = False
         self._last_embed_pull = 0.0
+        self._active_status_cache = {} # Cache trạng thái từ HeadlessProcessor
 
         # Offline queue (SQLite)
         self._db_path = Path(__file__).parent / "database" / "edge_offline.db"
@@ -64,6 +73,14 @@ class EdgeClient:
         )
         self._sync_thread.start()
 
+        # [NEW] Background IP Camera Discovery thread
+        self._discovered_rtsp = []
+        self._discovery_thread = threading.Thread(
+            target=self._discovery_loop, name="Edge-Discovery", daemon=True
+        )
+        self._discovery_thread.start()
+
+        # [NEW] Trạng thái camera sẽ được báo cáo định kỳ trong _sync_loop
         logger.info(f"EdgeClient khởi tạo | Server: {self.server_url} | Camera: {self.camera_id}")
 
     # ─── Offline DB ───────────────────────────
@@ -101,8 +118,13 @@ class EdgeClient:
                 f"{self.server_url}/api/health",
                 timeout=3,
             )
-            self._server_online = resp.status_code == 200
-            return self._server_online
+            online = (resp.status_code == 200)
+            if online and not self._server_online:
+                # Vừa kết nối lại -> Báo cáo trạng thái ngay
+                logger.info("🌐 Server Online - Đang báo cáo trạng thái...")
+                threading.Thread(target=self.report_status, daemon=True).start()
+            self._server_online = online
+            return online
         except Exception:
             self._server_online = False
             return False
@@ -110,6 +132,44 @@ class EdgeClient:
     @property
     def is_server_online(self) -> bool:
         return self._server_online
+
+    # ─── Dynamic Camera Detection ──────────────
+
+    def report_status(self):
+        """Kiểm tra các cổng camera và báo cáo về Server."""
+        try:
+            status_map = {}
+
+            # [FIX] Dùng đúng Camera ID (CAM_01, CAM_02...) thay vì index số ("0", "1"...)
+            # Để UI có thể map đúng với frame được upload lên
+            for cam_id, is_active in self._active_status_cache.items():
+                # Chỉ báo cáo các ID dạng CAM_xx (không báo index thô như "0", "1")
+                if is_active:
+                    status_map[cam_id] = True
+
+            # Thêm các IP Cams quét được từ ONVIF (dùng RTSP URL làm key)
+            for link in self._discovered_rtsp:
+                status_map[link] = True
+
+            payload = {
+                "device_name": edge_config.device_name,
+                "camera_status": status_map,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            requests.post(
+                f"{self.server_url}/api/system/edge_status",
+                json=payload,
+                headers=self._headers(),
+                timeout=5
+            )
+            logger.debug(f"📡 Báo cáo trạng thái: {list(status_map.keys())}")
+        except Exception as e:
+            logger.error(f"Lỗi khi report_status: {e}")
+
+    def update_active_status(self, camera_id: str, is_active: bool):
+        """Cập nhật bộ đệm trạng thái từ Processor."""
+        self._active_status_cache[camera_id] = is_active
 
     # ─── Pull Embeddings ──────────────────────
 
@@ -279,6 +339,9 @@ class EdgeClient:
                 # 1. Sync offline records
                 if self.check_server():
                     self._push_offline_records()
+                    
+                    # [NEW] Thường xuyên cập nhật danh sách camera động
+                    self.report_status()
 
                 # 2. Refresh embeddings định kỳ
                 if self._server_online and self.should_refresh_embeddings():
@@ -289,6 +352,24 @@ class EdgeClient:
 
             # Ngủ theo chu kỳ
             for _ in range(edge_config.sync_interval_sec):
+                if self._stop_event.is_set():
+                    break
+                time.sleep(1)
+
+    def _discovery_loop(self):
+        """Vòng lặp nền quét mạng LAN tìm IP Camera."""
+        time.sleep(2) # Chờ app khởi động
+        while not self._stop_event.is_set():
+            try:
+                cam_details = discover_network_cameras(timeout=3.0)
+                links = generate_rtsp_links(cam_details)
+                if links:
+                    self._discovered_rtsp = links
+            except Exception as e:
+                logger.debug(f"Discovery error: {e}")
+            
+            # Quét định kỳ mỗi 60 giây
+            for _ in range(60):
                 if self._stop_event.is_set():
                     break
                 time.sleep(1)
@@ -356,6 +437,11 @@ class EdgeClient:
 
     def get_system_command(self) -> str:
         """Lấy lệnh hệ thống từ Server (START/STOP)."""
+        data = self.get_system_command_raw()
+        return data.get("command", "STOP")
+
+    def get_system_command_raw(self) -> dict:
+        """Lấy toàn bộ dữ liệu lệnh từ Server (bao gồm cả target_camera)."""
         try:
             resp = requests.get(
                 f"{self.server_url}/api/system/command",
@@ -363,11 +449,10 @@ class EdgeClient:
                 timeout=2,
             )
             if resp.status_code == 200:
-                data = resp.json()
-                return data.get("command", "STOP")
+                return resp.json()
         except Exception:
             pass
-        return "STOP"  # Mặc định là STOP nếu lỗi kết nối
+        return {"command": "STOP", "target_camera": None}
 
     def stop(self):
         """Dừng background sync."""

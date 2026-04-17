@@ -150,6 +150,13 @@ class EdgeConfig:
     # Hiển thị
     fullscreen:           bool = os.getenv("EDGE_FULLSCREEN", "true").lower() == "true"
     show_fps:             bool = os.getenv("EDGE_SHOW_FPS", "true").lower() == "true"
+    auto_start:           bool = os.getenv("EDGE_AUTO_START", "true").lower() == "true"
+
+    # Cấu hình danh sách camera (Mặc định cho Multi-cam)
+    camera_list: list = field(default_factory=lambda: [
+        {"id": "CAM_01", "name": "Camera 01", "source": "0"},
+        {"id": "CAM_02", "name": "Camera 02", "source": "1"},
+    ])
 
 db_config     = DatabaseConfig()
 ai_config     = AIConfig()

@@ -1,7 +1,7 @@
 @echo off
 setlocal
 title FaceAttend EDGE BOX
-color 0a
+color 0b
 
 echo ============================================================
 echo           FACEATTEND EDGE BOX - DIEM DANH KHUON MAT
@@ -20,12 +20,12 @@ if %errorlevel% neq 0 (
 set PY_EXE=python
 if exist .venv\Scripts\python.exe (
     set PY_EXE=.venv\Scripts\python.exe
-    echo [INFO] Su dung moi truong ao: .venv
+    rem echo [INFO] Su dung moi truong ao: .venv
 ) else if exist venv\Scripts\python.exe (
     set PY_EXE=venv\Scripts\python.exe
-    echo [INFO] Su dung moi truong ao: venv
+    rem echo [INFO] Su dung moi truong ao: venv
 ) else (
-    echo [INFO] Su dung Python he thong.
+    rem echo [INFO] Su dung Python he thong.
 )
 
 :: 3. Tao cac thu muc can thiet
@@ -33,30 +33,46 @@ if not exist "models" mkdir models
 if not exist "logs" mkdir logs
 if not exist "database" mkdir database
 
-:: 4. Hien thi cau hinh Edge
+:menu
+cls
+color 0b
+echo ==============================================================================
+echo                 FACEATTEND EDGE BOX - TRUNG TAM ĐIEU KHIEN
+echo ==============================================================================
 echo.
-echo [THONG TIN EDGE BOX]
+echo [THONG TIN CAU HINH HIEN TAI]
 if exist ".env.edge" (
-    echo   Cau hinh: .env.edge
-    type .env.edge | findstr "EDGE_SERVER_URL EDGE_CAMERA_ID EDGE_DEVICE_NAME"
+    type .env.edge | findstr "EDGE_SERVER_URL EDGE_CAMERA_ID EDGE_CAMERA_SOURCE"
 ) else (
     echo   [CANH BAO] Khong tim thay file .env.edge!
-    echo   Dang su dung cau hinh mac dinh.
-    echo   Hay tao file .env.edge de cau hinh ket noi Server.
 )
-
-:: 5. Khoi dong Edge Kiosk
-echo.
-echo ============================================================
-echo   DANG KHOI DONG EDGE BOX...
-echo   Nhan Ctrl+C hoac dong cua so de dung.
-echo ============================================================
 echo.
 
+:: TU DONG MO HE THONG NGAY LAP TUC QUA YEU CAU CUA USER
+goto run_edge
+
+:run_test
+cls
+color 0a
+echo ============================================================
+echo   DANG CHAY TIEU TRINH QUET CAMERA IP...
+echo ============================================================
+%PY_EXE% test_ip_camera.py
+echo.
+pause
+goto menu
+
+:run_edge
+cls
+color 0a
+echo ============================================================
+echo   DANG KHOI DONG EDGE BOX (Nhan Ctrl+C de dung)...
+echo ============================================================
+echo.
 %PY_EXE% main_edge.py
-
 echo.
 echo ============================================================
 echo [DONE] Edge Box da dung.
 echo ============================================================
 pause
+goto menu
