@@ -242,11 +242,11 @@ GO
 -- Cameras
 INSERT INTO Cameras (camera_name, location_desc, rtsp_url, ip_address, resolution)
 VALUES
-    (N'Camera Sảnh Tầng 1',    N'Cửa vào chính',           N'rtsp://admin:admin@192.168.1.101:554/stream', N'192.168.1.101', N'1280x720'),
-    (N'Camera Phòng Học A101', N'Phòng học tầng 2',         N'rtsp://admin:admin@192.168.1.102:554/stream', N'192.168.1.102', N'1280x720'),
-    (N'Camera Phòng Học A102', N'Phòng học tầng 2',         N'rtsp://admin:admin@192.168.1.103:554/stream', N'192.168.1.103', N'1280x720'),
-    (N'Camera Hành Lang T3',   N'Hành lang tầng 3',         N'rtsp://admin:admin@192.168.1.104:554/stream', N'192.168.1.104', N'1920x1080'),
-    (N'Webcam USB',            N'Webcam kết nối trực tiếp',  NULL,                                          NULL,             N'1280x720')
+    (N'Camera Tầng 1 ', N'Khu vực Tầng 1', N'rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0', N'192.168.1.17', N'1280x720'),
+    (N'Camera Tầng 2 ', N'Khu vực Tầng 2', N'rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0', N'192.168.1.23', N'1280x720'),
+    (N'Camera Tầng 3 ', N'Khu vực Tầng 3', N'rtsp://admin:a1234567@192.168.1.19:554/cam/realmonitor?channel=1&subtype=0', N'192.168.1.19', N'1280x720'),
+    (N'Camera Tầng 4 ', N'Khu vực Tầng 4', N'rtsp://admin:a1234567@192.168.1.20:554/cam/realmonitor?channel=1&subtype=0', N'192.168.1.20', N'1280x720'),
+    (N'Camera Tầng 5 ', N'Khu vực Tầng 5', N'rtsp://admin:a1234567@192.168.1.21:554/cam/realmonitor?channel=1&subtype=0', N'192.168.1.21', N'1280x720')
 GO
 
 -- AttendanceSessions

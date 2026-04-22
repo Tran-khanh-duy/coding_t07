@@ -35,7 +35,7 @@ class CaptureWorker(QThread):
     capture_done  = pyqtSignal(list)         # Danh sách frames đã chụp
     face_detected = pyqtSignal(bool)         # Có phát hiện khuôn mặt không
 
-    def __init__(self, source=0, target_count=10, parent=None):
+    def __init__(self, source=0, target_count=15, parent=None):
         super().__init__(parent)
         self.source       = source
         self.target_count = target_count
@@ -113,10 +113,16 @@ class CaptureWorker(QThread):
                         try:
                             detected_faces = face_engine.detect_faces(frame)
                             if detected_faces:
-                                # Chọn khuôn mặt lớn nhất (gần camera nhất) thay vì yêu cầu chỉ có 1 mặt
+                                # Chọn khuôn mặt lớn nhất (gần camera nhất) để có embedding sâu sắc và tinh khiết nhất
                                 main_face = max(detected_faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-                                faces = [main_face]
-                                has_face = True
+                                
+                                # Tính diện tích khuôn mặt trong khung
+                                face_area = (main_face.bbox[2] - main_face.bbox[0]) * (main_face.bbox[3] - main_face.bbox[1])
+                                
+                                # THRESHOLD CAO NHẤT: Chỉ bắt nhịp khi mặt đủ rõ (>80%) và đủ lớn/gần
+                                if main_face.det_score > 0.70 and face_area > 15000:
+                                    faces = [main_face]
+                                    has_face = True
                         except Exception:
                             pass
                     
@@ -145,9 +151,11 @@ class CaptureWorker(QThread):
             has_face, faces = ai_thread.get_latest()
 
             # Lưu frame GỐC cho embedding
+            # Lưu frame GỐC cho embedding tốc độ cao
             if self._capturing and has_face:
                 now = time.time()
-                if now - self._last_capture_time >= 0.4:
+                # Gia tăng interval lên 0.45s 1 ảnh để người dùng có thời gian quay góc chéo/cúi đầu
+                if now - self._last_capture_time >= 0.45:
                     self._frames.append(frame.copy())
                     self._last_capture_time = now
                     count = len(self._frames)
@@ -407,20 +415,20 @@ class EnrollPage(QWidget):
         p_header = QHBoxLayout()
         p_title = QLabel("TIẾN TRÌNH CHỤP MẪU")
         p_title.setStyleSheet(f"font-size: 11px; font-weight: 800; color: {Colors.TEXT_DIM}; letter-spacing: 1px;")
-        self._lbl_count = QLabel("0 / 10")
+        self._lbl_count = QLabel("0 / 15")
         self._lbl_count.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {Colors.CYAN};")
         p_header.addWidget(p_title); p_header.addStretch(); p_header.addWidget(self._lbl_count)
         prog_layout.addLayout(p_header)
 
         self._progress_bar = QProgressBar()
-        self._progress_bar.setRange(0, 10); self._progress_bar.setValue(0); self._progress_bar.setFixedHeight(8); self._progress_bar.setTextVisible(False)
+        self._progress_bar.setRange(0, 15); self._progress_bar.setValue(0); self._progress_bar.setFixedHeight(8); self._progress_bar.setTextVisible(False)
         self._progress_bar.setStyleSheet(f"QProgressBar {{ background: {Colors.BG_PANEL}; border-radius: 4px; border: none; }} QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {Colors.CYAN_DIM}, stop:1 {Colors.CYAN}); border-radius: 4px; }}")
         prog_layout.addWidget(self._progress_bar)
 
         self._dots_layout = QHBoxLayout(); self._dots_layout.setSpacing(8); self._dots: list[QLabel] = []
-        for i in range(10):
+        for i in range(15):
             dot = QLabel("○"); dot.setFixedWidth(22); dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 18px;")
+            dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 14px;")
             self._dots.append(dot); self._dots_layout.addWidget(dot)
         self._dots_layout.addStretch()
         self._lbl_face_status = QLabel("⬤ NO FACE")
@@ -658,7 +666,7 @@ class EnrollPage(QWidget):
             QMessageBox.warning(self, "Cảnh báo", "Vui lòng chọn Camera hợp lệ!")
             return
             
-        self._capture_worker = CaptureWorker(source=camera_source, target_count=10)
+        self._capture_worker = CaptureWorker(source=camera_source, target_count=15)
         self._capture_worker.frame_ready.connect(self._on_frame)
         self._capture_worker.photo_taken.connect(self._on_photo_taken)
         self._capture_worker.capture_done.connect(self._on_capture_done)
@@ -689,10 +697,10 @@ class EnrollPage(QWidget):
         if not self._capture_worker: return
         
         self._progress_bar.setValue(0)
-        self._lbl_count.setText("0 / 10")
+        self._lbl_count.setText("0 / 15")
         for dot in self._dots:
             dot.setText("○")
-            dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 18px;")
+            dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 14px;")
             
         self._captured_frames = []
         self._btn_enroll.setEnabled(False)

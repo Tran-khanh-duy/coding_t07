@@ -65,9 +65,10 @@ class AIConfig:
 
     # TRẢ LẠI CHUẨN ĐỘ PHÂN GIẢI CAO: Giữ (640, 640) để model quét kỹ hơn,
     # bắt được khuôn mặt ở xa và góc nghiêng tốt hơn, đảm bảo độ chính xác >98%.
-    det_size:         tuple = (320, 320)  # Giảm độ phân giải để tăng tốc độ phát hiện
+    det_size:         tuple = (640, 640)  # [Đã Nâng Cấp] Tăng kích thước lưới quét AI
 
-    recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.60"))
+    # Threshold 0.65 là "Điểm Vàng" theo công bố của InsightFace cho ảnh lấy từ Camera Thực tế
+    recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.65")) 
     min_enroll_photos:  int = 5
     max_enroll_photos:  int = 10
     embedding_size:   int   = 512
@@ -82,8 +83,8 @@ class AIConfig:
 class CameraConfig:
     source: str = "0"
     fps: int = 60
-    width:  int = 1280
-    height: int = 720
+    width:  int = 1920
+    height: int = 1080
     reconnect_delay_sec: int = 3
     max_reconnect_tries: int = 5
 
@@ -96,7 +97,11 @@ class CameraConfig:
                str(self.source).startswith("http://")
 
 CAMERAS: list[dict] = [
-    {"id": 1, "name": "Camera Tầng 1", "source": "0", "floor": 1, "active": True},
+    {"id": 1, "name": "Camera 1", "source": "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
+    {"id": 2, "name": "Camera 2", "source": "rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
+    {"id": 3, "name": "Camera 3", "source": "rtsp://admin:a1234567@192.168.1.19:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
+    {"id": 4, "name": "Camera 4", "source": "rtsp://admin:a1234567@192.168.1.20:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
+    {"id": 5, "name": "Camera 5", "source": "rtsp://admin:a1234567@192.168.1.21:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
 ]
 
 @dataclass

@@ -142,14 +142,14 @@ class EdgeClient:
 
             # [FIX] Dùng đúng Camera ID (CAM_01, CAM_02...) thay vì index số ("0", "1"...)
             # Để UI có thể map đúng với frame được upload lên
-            for cam_id, is_active in self._active_status_cache.items():
-                # Chỉ báo cáo các ID dạng CAM_xx (không báo index thô như "0", "1")
-                if is_active:
-                    status_map[cam_id] = True
+            # Luôn báo cáo danh sách camera được cấu hình là có sẵn (để UI không xóa mất dropdown button)
+            for cam in edge_config.camera_list:
+                status_map[cam["id"]] = True
 
-            # Thêm các IP Cams quét được từ ONVIF (dùng RTSP URL làm key)
-            for link in self._discovered_rtsp:
-                status_map[link] = True
+            # Bỏ qua _active_status_cache kiểm tra False vì ta luôn cần hiện trên UI để gọi dậy từ Standby
+            for cam_id, is_active in self._active_status_cache.items():
+                if is_active and cam_id not in status_map:
+                    status_map[cam_id] = True
 
             payload = {
                 "device_name": edge_config.device_name,

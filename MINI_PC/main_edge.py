@@ -18,7 +18,8 @@ from pathlib import Path
 from loguru import logger
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-
+# Tối ưu kết nối siêu tốc cho Camera IP (bỏ qua bước phân tích stream rườm rà)
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|analyzeduration;500000|probesize;5000000"
 # Load .env.edge nếu tồn tại
 ROOT = Path(__file__).parent
 env_file = ROOT / ".env.edge"

@@ -20,7 +20,7 @@ from loguru import logger
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
-from config import edge_config, ai_config, anti_spoof_config
+from config import edge_config, ai_config, anti_spoof_config, camera_config
 from services.face_engine import face_engine, ANTI_SPOOF_AVAILABLE
 try:
     from services.anti_spoof_service import anti_spoof_service
@@ -101,6 +101,13 @@ class CameraWorker(threading.Thread):
             ret, frame = self._cap.read()
             if not ret:
                 logger.warning(f"⚠️ Camera {self.camera_id}: Mất tín hiệu, đang thử lại...")
+                edge_client.update_active_status(self.camera_id, False)
+                if self._cap:
+                    self._cap.release()
+                    self._cap = None
+                with SOURCES_LOCK:
+                    if hasattr(self, 'source') and self.source in ACTIVE_SOURCES:
+                        ACTIVE_SOURCES.remove(self.source)
                 time.sleep(1)
                 continue
 
@@ -232,8 +239,8 @@ class CameraWorker(threading.Thread):
                         self._cap = cv2.VideoCapture(cam_source, cv2.CAP_ANY)
 
                 if self._cap and self._cap.isOpened():
-                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_config.width)
+                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_config.height)
                     self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     self.source = cam_source 
                     logger.info(f"📸 [{self.camera_id}] Đã mở thành công tại source {cam_source}.")
@@ -297,10 +304,14 @@ class CameraWorker(threading.Thread):
                         else:
                             txt_w, txt_h = draw.textsize(name, font=font)
                         
-                        bg_x1, bg_y1 = x1, max(0, y1 - txt_h - 20)
-                        bg_x2, bg_y2 = x1 + txt_w + 20, y1
+                        # Tính bù trừ ngược đảm bảo tọa độ không bao giờ bị âm hoặc y1 < y0
+                        bg_x1 = max(0, int(x1))
+                        bg_y1 = max(0, int(y1) - int(txt_h) - 20)
+                        bg_x2 = int(bg_x1 + txt_w + 20)
+                        bg_y2 = int(bg_y1 + txt_h + 20)
+                        
                         draw.rectangle([(bg_x1, bg_y1), (bg_x2, bg_y2)], fill=(0, 0, 0))
-                        draw.text((x1 + 10, bg_y1 + 4), name, font=font, fill=color_pil)
+                        draw.text((bg_x1 + 10, bg_y1 + 4), name, font=font, fill=color_pil)
 
                     frame_copy = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
@@ -371,7 +382,7 @@ class HeadlessProcessor:
             worker.set_attendance_enabled(is_auto)
             self._workers[cid] = worker
             worker.start()
-            time.sleep(2.0)
+            time.sleep(0.2)
 
         self._running = True
         self._run_control_loop()
@@ -409,25 +420,24 @@ class HeadlessProcessor:
                     self._target_camera_view = actual_target
                     
                     if actual_target and isinstance(actual_target, str) and actual_target.startswith("rtsp://"):
-                        if actual_target not in self._workers:
-                            if len(self._workers) >= 6:
-                                logger.warning(f"⚠️ Đã đạt giới hạn 6 luồng Camera. Khước từ tạo Worker mới: {actual_target}")
-                            else:
-                                logger.info(f"✨ Khởi tạo on-the-fly Worker cho: {actual_target}")
-                                new_worker = CameraWorker(camera_id=actual_target, source=actual_target)
-                                is_sys_start = (self._current_command == "START")
-                                new_worker.set_active(True) # Luôn để True để đọc ảnh preview
-                                new_worker.set_attendance_enabled(is_sys_start) 
-                                self._workers[actual_target] = new_worker
-                                new_worker.start()
+                        source_exists = any(w.source == actual_target for w in self._workers.values())
+                        if actual_target not in self._workers and not source_exists:
+                            logger.info(f"✨ Khởi tạo on-the-fly Worker cho: {actual_target}")
+                            new_worker = CameraWorker(camera_id=actual_target, source=actual_target)
+                            is_sys_start = (self._current_command == "START")
+                            new_worker.set_active(True) # Luôn để True để đọc ảnh preview
+                            new_worker.set_attendance_enabled(is_sys_start) 
+                            self._workers[actual_target] = new_worker
+                            new_worker.start()
 
                     for cid, worker in self._workers.items():
-                        is_match = (cid.upper() == str(actual_target).upper())
+                        is_match = (cid.upper() == str(actual_target).upper() or str(actual_target).upper() == str(worker.source).upper())
                         worker.set_previewing(is_match)
                         
                     # [NEW] Tự động khởi tạo Worker cho các IP Camera được phát hiện tự động
                     for rtsp_url in edge_client._discovered_rtsp:
-                        if rtsp_url not in self._workers and len(self._workers) < 6:
+                        source_exists = any(w.source == rtsp_url for w in self._workers.values())
+                        if rtsp_url not in self._workers and not source_exists:
                             logger.info(f"✨ Tự động nhận diện IP Camera mới: {rtsp_url}")
                             new_worker = CameraWorker(camera_id=rtsp_url, source=rtsp_url)
                             is_sys_start = (self._current_command == "START")
