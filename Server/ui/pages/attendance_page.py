@@ -678,8 +678,7 @@ class AttendancePage(QWidget):
         """Tải danh sách camera và xây dựng Menu phân cấp cho nút chọn duy nhất."""
         try:
             cameras = camera_repo.get_all(active_only=True)
-            self._cam_groups = {"Mini PC": []}
-            for i in range(1, 7): self._cam_groups[f"E{i}"] = []
+            self._cam_groups = {f"KTX E{i}": [] for i in range(1, 7)}
             
             # 1. Phân loại camera từ DB (cho các tòa nhà E1-E6)
             for cam in cameras:
@@ -688,55 +687,53 @@ class AttendancePage(QWidget):
                 group = None
                 for i in range(1, 7):
                     if f"E{i}" in name:
-                        group = f"E{i}"
+                        group = f"KTX E{i}"
                         break
                 
                 if group:
                     if source: self._cam_groups[group].append((cam.camera_name, source))
 
-            # [NEW] Xây dựng 6 slot camera mặc định cho Mini PC từ dữ liệu Live (Qua API Port 9696)
+            # [NEW] Xây dựng slot camera mặc định cho Mini PC từ dữ liệu Live (Qua API Port 9696)
             try:
                 # Phải dùng requests vì API và UI chạy ở 2 process riêng biệt (theo run_server.bat)
                 resp = requests.get("http://127.0.0.1:9696/api/system/edge_status", timeout=2)
                 edge_data = resp.json() if resp.status_code == 200 else {}
                 
-                live_status = {}
                 if edge_data:
-                    # Duyệt qua tất cả các box để gom trạng thái camera (Phòng trường hợp nhiều box)
+                    # Duyệt qua tất cả các box để gom trạng thái camera
                     for box_id, box_data in edge_data.items():
                         status = box_data.get("camera_status", {})
                         if status:
-                            live_status.update(status)
-
-                # [FIX] Chỉ hiển thị các camera thực sự Mini PC đang báo cáo (online)
-                # Không tạo thêm slot giả nếu không có dữ liệu
-                cam_index = 0
-                for k, v in live_status.items():
-                    if not v:
-                        continue
-                    cam_index += 1
-                    # Camera RTSP URL đầy đủ từ ONVIF discovery
-                    if k.startswith("rtsp://"):
-                        try:
-                            ip_port = k.split("@")[1].split("/")[0] if "@" in k else k.split("://")[1].split("/")[0]
-                        except:
-                            ip_port = "IP Cam"
-                        label = f"🟢 IP Cam ({ip_port}) [ONLINE]"
-                        source = k  # Dùng RTSP URL làm source cho RemoteStreamWorker
-                    else:
-                        # Camera ID dạng CAM_01, CAM_02...
-                        label = f"🟢 {k} [ONLINE]"
-                        source = k  # Dùng đúng Camera ID để khớp với frame upload
-                    self._cam_groups["Mini PC"].append((label, source))
-
-                # Fallback nếu không có camera nào online
-                if not self._cam_groups["Mini PC"]:
-                    self._cam_groups["Mini PC"].append(("🔴 Không có camera [Mini PC offline]", "CAM_01"))
+                            group_key = box_id
+                            if group_key not in self._cam_groups:
+                                self._cam_groups[group_key] = []
+                            
+                            for k, v in status.items():
+                                if not v:
+                                    continue
+                                # Camera RTSP URL đầy đủ từ ONVIF discovery
+                                if k.startswith("rtsp://"):
+                                    try:
+                                        ip_port = k.split("@")[1].split("/")[0] if "@" in k else k.split("://")[1].split("/")[0]
+                                    except:
+                                        ip_port = "IP Cam"
+                                    label = f"🟢 IP Cam ({ip_port}) [ONLINE]"
+                                    source = k  # Dùng RTSP URL làm source cho RemoteStreamWorker
+                                else:
+                                    # Map CAM_01 -> Tầng 1 cho đẹp
+                                    display_name = k
+                                    if k == "CAM_01": display_name = "Tầng 1"
+                                    elif k == "CAM_02": display_name = "Tầng 2"
+                                    elif k == "CAM_03": display_name = "Tầng 3"
+                                    elif k == "CAM_04": display_name = "Tầng 4"
+                                    elif k == "CAM_05": display_name = "Tầng 5"
+                                    
+                                    label = f"🟢 {display_name} [ONLINE]"
+                                    source = k  # Dùng đúng Camera ID để khớp với frame upload
+                                self._cam_groups[group_key].append((label, source))
 
             except Exception as e:
                 logger.warning(f"Không lấy được trạng thái live: {e}")
-                for i in range(6):
-                    self._cam_groups["Mini PC"].append((f"⚪ CAM_0{i+1} [CHƯA KẾT NỐI]", f"CAM_0{i+1}"))
 
             # 3. Tạo Menu chính phân cấp
             main_menu = QMenu(self)
@@ -747,12 +744,22 @@ class AttendancePage(QWidget):
                 QMenu::separator {{ height: 1px; background: {Colors.BORDER}; margin: 5px 10px; }}
             """)
 
-            groups_to_render = ["Mini PC"] + [f"E{i}" for i in range(1, 7)]
+            groups_to_render = [f"KTX E{i}" for i in range(1, 7)]
+            for k in self._cam_groups.keys():
+                if k not in groups_to_render:
+                    groups_to_render.append(k)
+
             for g_name in groups_to_render:
                 cams = self._cam_groups.get(g_name, [])
+                
+                # Tạo placeholder cho 5 tầng nếu KTX này chưa có cấu hình Camera 
+                if not cams and g_name.startswith("KTX E"):
+                    for i in range(1, 6):
+                        cams.append((f"⚪ Tầng {i} [OFFLINE]", f"OFFLINE_{g_name}_{i}"))
+                        
                 if not cams: continue
                 
-                icon = "⚪" if g_name == "Mini PC" else "🏢"
+                icon = "🏢"
                 sub_menu = main_menu.addMenu(f"{icon}  {g_name}")
                 sub_menu.setStyleSheet(main_menu.styleSheet())
                 
@@ -762,11 +769,13 @@ class AttendancePage(QWidget):
             
             self._btn_camera_select.setMenu(main_menu)
 
-            # Mặc định hiển thị label Mini PC nếu có
-            if self._cam_groups["Mini PC"]:
-                c_name, source = self._cam_groups["Mini PC"][0]
-                # Chỉ hiển thị tên, không hiển thị trạng thái cồng kềnh trên label chính
-                self._lbl_current_cam.setText(f"🎥 Mini PC - {c_name.split(' ')[1]}")
+            # Mặc định hiển thị label KTX E4 nếu có
+            if self._cam_groups.get("KTX E4"):
+                c_name, source = self._cam_groups["KTX E4"][0]
+                self._lbl_current_cam.setText(f"🎥 KTX E4 - {c_name.split(' ')[1]}")
+            elif self._cam_groups.get("KTX E1"):
+                c_name, source = self._cam_groups["KTX E1"][0]
+                self._lbl_current_cam.setText(f"🎥 KTX E1 - {c_name.split(' ')[1]}")
             
         except Exception as e:
             logger.error(f"Error refreshing cameras: {e}")

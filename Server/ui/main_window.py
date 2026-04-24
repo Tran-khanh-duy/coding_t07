@@ -197,7 +197,11 @@ class MainWindow(QMainWindow):
         self._loading.raise_()
 
     def _handle_navigation(self, page_id: int):
+        # Khi bấm "Đăng ký mới" trực tiếp từ sidebar → luôn reset về form trống
+        if page_id == Sidebar.PAGE_ENROLL:
+            self._pages[Sidebar.PAGE_ENROLL]._reset_form()
         self._stack.setCurrentIndex(page_id)
+
 
     def _navigate_to_enroll(self, student_id: int):
         # Chọn mục Đăng ký trên thanh điều hướng bên trái

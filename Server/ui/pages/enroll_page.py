@@ -353,6 +353,10 @@ class EnrollPage(QWidget):
         grid.addWidget(create_label("Họ và tên *"), 0, 1)
         self._inp_code = QLineEdit(); self._inp_code.setStyleSheet(input_style()); self._inp_code.setFixedHeight(48); self._inp_code.setPlaceholderText("VD: HV001")
         self._inp_name = QLineEdit(); self._inp_name.setStyleSheet(input_style()); self._inp_name.setFixedHeight(48); self._inp_name.setPlaceholderText("Nguyễn Văn A")
+        
+        # Thêm sự kiện kiểm tra học viên đã tồn tại
+        self._inp_code.editingFinished.connect(self._check_existing_student)
+        
         grid.addWidget(self._inp_code, 1, 0)
         grid.addWidget(self._inp_name, 1, 1)
 
@@ -587,6 +591,8 @@ class EnrollPage(QWidget):
             self._result_card.setStyleSheet(card_style(Colors.GREEN + "40", radius=12))
             self._result_card.show()
             self._btn_create.setText("✅  Đã cập nhật")
+            # [FIX] Reload cache cục bộ + Thông báo API Server để Mini PC biết có embedding mới
+            self._reload_and_notify()
         else:
             self._set_create_status(f"❌ Lỗi xử lý ảnh: {result.error_msg}", Colors.RED)
             self._btn_create.setEnabled(True)
@@ -599,6 +605,18 @@ class EnrollPage(QWidget):
         if self._mode == "create":
             self._load_classes()
             self._load_cameras()
+        else:
+            # Nếu đang ở chế độ update (do chuyển từ Danh sách HV sang),
+            # vẫn load lại classes/cameras nhưng KHÔNG reset form
+            self._load_classes()
+            self._load_cameras()
+
+    def reset_to_new_form(self):
+        """Công khai: Reset form về trạng thái tạo mới. Gọi từ ngoài khi cần."""
+        self._reset_form()
+        self._load_classes()
+        self._load_cameras()
+
 
     def _load_classes(self):
         self._cmb_class.clear()
@@ -610,20 +628,44 @@ class EnrollPage(QWidget):
         except Exception as e:
             logger.warning(f"Không load được danh sách lớp: {e}")
 
+    def _check_existing_student(self):
+        code = self._inp_code.text().strip()
+        if not code: return
+        # Tránh load lại liên tục nếu vẫn đang ở chế độ update cùng mã
+        if self._mode == "update" and self._current_student_id is not None:
+            try:
+                from database.repositories import student_repo
+                stu = student_repo.get_by_id(self._current_student_id)
+                if stu and stu.student_code == code:
+                    return
+            except: pass
+
+        try:
+            from database.repositories import student_repo
+            student = student_repo.get_by_code(code)
+            if student:
+                # Nếu đã có, load để cập nhật
+                self.load_student(student.student_id)
+                self._set_create_status(f"🔍 Đã tự động tải học viên cũ: {student.full_name}", Colors.CYAN)
+            else:
+                # Trở về trạng thái tạo mới nếu trước đó đang update người khác
+                if self._mode == "update":
+                    self._reset_form()
+                    self._inp_code.setText(code)
+                    self._set_create_status(f"📝 Tạo mới học viên: {code}", Colors.CYAN)
+        except Exception as e:
+            logger.error(f"Error checking student code: {e}")
+
     def _load_cameras(self):
         self._cmb_camera.clear()
-        try:
-            from database.repositories import camera_repo
-            cameras = camera_repo.get_all()
-            if not cameras:
-                self._cmb_camera.addItem("Không tìm thấy Camera", None)
-            else:
-                for cam in cameras:
-                    if cam.is_active:
-                        self._cmb_camera.addItem(cam.camera_name, cam.rtsp_url)
-                self._btn_camera.setEnabled(True)
-        except Exception as e:
-            logger.error(f"Error loading cameras: {e}")
+        # Chuyển đổi danh sách camera thành các luồng cấu hình cố định của Mini PC KTX E4
+        self._cmb_camera.addItem("KTX E4 - Tầng 1 (192.168.1.17)", "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0")
+        self._cmb_camera.addItem("KTX E4 - Tầng 2 (192.168.1.23)", "rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0")
+        self._cmb_camera.addItem("KTX E4 - Tầng 3 (192.168.1.19)", "rtsp://admin:a1234567@192.168.1.19:554/cam/realmonitor?channel=1&subtype=0")
+        self._cmb_camera.addItem("KTX E4 - Tầng 4 (192.168.1.20)", "rtsp://admin:a1234567@192.168.1.20:554/cam/realmonitor?channel=1&subtype=0")
+        self._cmb_camera.addItem("KTX E4 - Tầng 5 (192.168.1.21)", "rtsp://admin:a1234567@192.168.1.21:554/cam/realmonitor?channel=1&subtype=0")
+        self._cmb_camera.addItem("Camera tích hợp / USB mặc định", 0)
+        self._btn_camera.setEnabled(True)
 
     def _on_create_student(self):
         code = self._inp_code.text().strip()
@@ -739,12 +781,47 @@ class EnrollPage(QWidget):
             self._lbl_result.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {Colors.GREEN};")
             self._result_card.setStyleSheet(f"background: {Colors.GREEN}20; border: 1px solid {Colors.GREEN}44; border-radius: 12px;")
             self._btn_enroll.setText("✅  ĐÃ HOÀN TẤT")
+            # [FIX] Reload cache cục bộ + Thông báo API Server để Mini PC biết có embedding mới
+            self._reload_and_notify()
         else:
             self._lbl_result.setText(f"❌ {result.error_msg}")
             self._lbl_result.setStyleSheet(f"font-size: 14px; font-weight: 800; color: {Colors.RED};")
             self._result_card.setStyleSheet(f"background: {Colors.RED}20; border: 1px solid {Colors.RED}44; border-radius: 12px;")
             self._btn_enroll.setText("🎯  THỬ LẠI")
             self._btn_enroll.setEnabled(True)
+
+    def _reload_and_notify(self):
+        """
+        [FIX] Bước khóa: Reload cache cục bộ (xài trên Server)
+        rồi gọi HTTP /api/reload-cache để API Server tăng embedding_version.
+        Mini PC polling endpoint này mỗi 10 giây → tự pull lại embeddings khi thấy version thay đổi.
+        """
+        import threading
+        # 1. Reload RAM cache tren process Server
+        try:
+            from services.embedding_cache_manager import cache_manager
+            cache_manager.load()
+            logger.info(f"✅ Reload cache cục bộ: {cache_manager.size} học viên")
+        except Exception as e:
+            logger.error(f"Error reloading local cache: {e}")
+
+        # 2. Gọi HTTP POST để api_server tăng embedding_version
+        def _call_reload_api():
+            try:
+                import requests
+                resp = requests.post(
+                    "http://127.0.0.1:9696/api/reload-cache",
+                    headers={"X-API-Key": "faceattend_secret_2026"},
+                    timeout=3
+                )
+                if resp.ok:
+                    data = resp.json()
+                    logger.success(f"📢 API Server embedding_version = {data.get('embedding_version')} — Mini PC sẽ tự động cập nhật")
+                else:
+                    logger.warning(f"API /reload-cache trả về {resp.status_code}")
+            except Exception as ex:
+                logger.error(f"Có thể api_server chưa khởi động: {ex}")
+        threading.Thread(target=_call_reload_api, daemon=True).start()
 
     def _on_frame(self, frame: np.ndarray):
         self._camera_view.update_frame(frame)
@@ -781,8 +858,10 @@ class EnrollPage(QWidget):
         self._lbl_create_status.setStyleSheet(f"font-size: 12px; font-weight: 700; color: {color};")
 
     def _lock_form(self):
-        for w in [self._inp_code, self._inp_name, self._cmb_class, self._cmb_gender, self._inp_phone, self._inp_email, self._cmb_camera]:
+        # Khóa tất cả trừ Camera để người dùng vẫn có thể đổi trạm chụp
+        for w in [self._inp_code, self._inp_name, self._cmb_class, self._cmb_gender, self._inp_phone, self._inp_email]:
             w.setEnabled(False)
+        self._cmb_camera.setEnabled(True)
 
     def _reset_form(self):
         self._close_camera()

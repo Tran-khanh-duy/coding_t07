@@ -165,6 +165,7 @@ class StudentsPage(QWidget):
                 text-transform: uppercase;
             }}
         """)
+        self._table.itemDoubleClicked.connect(self._on_item_double_clicked)
         layout.addWidget(self._table, 1)
 
         # ── Footer ──
@@ -221,6 +222,7 @@ class StudentsPage(QWidget):
 
     def _render_table(self, students: list):
         self._table.setRowCount(0)
+        self._displayed_students = students # Lưu lại để tham chiếu ID khi click
         self._lbl_footer.setText(f"Hiển thị {len(students)} / {len(self._all_students)} học viên")
 
         for row, s in enumerate(students):
@@ -310,6 +312,13 @@ class StudentsPage(QWidget):
             action_lay.addWidget(btn_edit)
             action_lay.addWidget(btn_del)
             self._table.setCellWidget(row, 6, action_widget)
+
+    def _on_item_double_clicked(self, item):
+        """Xử lý double click vào hàng để mở trang đăng ký/cập nhật."""
+        row = item.row()
+        if hasattr(self, '_displayed_students') and row < len(self._displayed_students):
+            student = self._displayed_students[row]
+            self.go_to_enroll.emit(student.student_id)
 
     def _on_delete_student(self, student_id: int, name: str):
         """Xử lý xóa học viên."""

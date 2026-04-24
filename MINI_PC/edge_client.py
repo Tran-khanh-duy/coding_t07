@@ -66,6 +66,10 @@ class EdgeClient:
         self._cooldown_map: dict[int, float] = {}
         self._cooldown_lock = threading.Lock()
 
+        # [FIX] Theo dõi phiên bản embedding — phát hiện có học viên mới ngay lập tức
+        self._known_embedding_version: int = -1
+        self._last_version_check: float = 0.0
+
         # Background sync thread
         self._stop_event = threading.Event()
         self._sync_thread = threading.Thread(
@@ -332,7 +336,7 @@ class EdgeClient:
     # ─── Background Sync ─────────────────────
 
     def _sync_loop(self):
-        """Vòng lặp nền: đồng bộ offline records + refresh embeddings."""
+        """Vòng lặp nền: đồng bộ offline records + refresh embeddings thông minh."""
         time.sleep(5)  # Chờ khởi động ổn định
         while not self._stop_event.is_set():
             try:
@@ -343,7 +347,14 @@ class EdgeClient:
                     # [NEW] Thường xuyên cập nhật danh sách camera động
                     self.report_status()
 
-                # 2. Refresh embeddings định kỳ
+                    # [FIX] Kiểm tra phiên bản embedding mỗi 10 giây
+                    # Thay vì chờ 10 phút, chỉ pull khi có phân bản mới
+                    now = time.time()
+                    if now - self._last_version_check >= 10.0:
+                        self._last_version_check = now
+                        self._check_embedding_version()
+
+                # 2. Refresh embeddings định kỳ dự phòng (giữ lại dùng kịch bản khởi động lần đầu)
                 if self._server_online and self.should_refresh_embeddings():
                     self.pull_embeddings()
 
@@ -355,6 +366,27 @@ class EdgeClient:
                 if self._stop_event.is_set():
                     break
                 time.sleep(1)
+
+    def _check_embedding_version(self):
+        """
+        [FIX] Kiểm tra nhanh xem có học viên mới đăng ký không.
+        Nếu có phân bản mới → pull lại toàn bộ embeddings — không cần restart Mini PC.
+        """
+        try:
+            resp = requests.get(
+                f"{self.server_url}/api/embeddings/version",
+                headers=self._headers(),
+                timeout=2,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                server_version = data.get("embedding_version", 0)
+                if server_version != self._known_embedding_version:
+                    logger.info(f"📥 Phát hiện embedding_version mới: {self._known_embedding_version} → {server_version} — Đang pull...") 
+                    self.pull_embeddings()
+                    self._known_embedding_version = server_version
+        except Exception as e:
+            logger.debug(f"_check_embedding_version error: {e}")
 
     def _discovery_loop(self):
         """Vòng lặp nền quét mạng LAN tìm IP Camera."""

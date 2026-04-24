@@ -43,6 +43,11 @@ class SystemState:
     # [NEW] Trạng thái các Mini PC (camera động)
     edge_status_data = {}  # {device_name: {"cameras": [0,1], "last_seen": timestamp}}
 
+    # [FIX] Phiên bản embedding — tăng lên mỗi khi có học viên mới đăng ký
+    # Mini PC poll endpoint này để biết cần pull lại embeddings không
+    embedding_version: int = 0
+    embedding_updated_at: str = ""
+
 system_state = SystemState()
 
 import sys
@@ -493,14 +498,34 @@ async def reload_cache(api_key: str = Security(verify_api_key)):
     try:
         cache_manager.load()
         cache = cache_manager.get_cache()
+        # [FIX] Tăng phiên bản để Mini PC biết cần pull lại
+        system_state.embedding_version += 1
+        system_state.embedding_updated_at = datetime.now().isoformat()
+        logger.info(f"📢 Embedding version → {system_state.embedding_version} (có học viên mới)")
         return {
             "status": "ok",
             "message": f"Đã reload {cache.size} embeddings",
             "count": cache.size,
+            "embedding_version": system_state.embedding_version,
         }
     except Exception as e:
         logger.error(f"Lỗi reload cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Kiểm tra phiên bản embedding (Mini PC polling) ─
+@app.get("/api/embeddings/version")
+async def get_embedding_version(api_key: str = Security(verify_api_key)):
+    """
+    Mini PC gọi endpoint này mỗi 10 giây để kiểm tra có embedding mới không.
+    Nếu version thay đổi → pull lại toàn bộ embeddings.
+    Tránh phải tải 512*N floats mỗi lần check.
+    """
+    return {
+        "embedding_version": system_state.embedding_version,
+        "updated_at": system_state.embedding_updated_at,
+        "total": cache_manager.size,
+    }
 
 
 # ── Log Filtering (Silence /api/system/frame spam) ───
