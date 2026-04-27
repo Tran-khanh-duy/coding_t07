@@ -241,7 +241,7 @@ class DashboardPage(QWidget):
         title_col = QVBoxLayout()
         school_lbl = QLabel("HỌC VIỆN KỸ THUẬT VÀ CÔNG NGHỆ AN NINH")
         school_lbl.setStyleSheet(f"font-size: 15px; font-weight: 900; color: {Colors.CYAN};")
-        sys_lbl = QLabel("ĐIỂM DANH NHẬN DIỆN KHUÔN MẶT")
+        sys_lbl = QLabel("PHÒNG QUẢN LÝ HỌC VIÊN")
         sys_lbl.setStyleSheet(f"font-size: 24px; font-weight: 900; color: #0F172A; letter-spacing: -0.5px;")
         title_col.addWidget(school_lbl)
         title_col.addWidget(sys_lbl)

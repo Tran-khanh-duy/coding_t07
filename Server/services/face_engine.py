@@ -36,13 +36,20 @@ from database.models import EmbeddingCache
 try:
     if anti_spoof_config.enabled:
         from services.anti_spoof_service import anti_spoof_service
-        ANTI_SPOOF_AVAILABLE = True
+        # Kiểm tra xem service có nạp được model nào không
+        if anti_spoof_service and anti_spoof_service.models_cache:
+            ANTI_SPOOF_AVAILABLE = True
+            logger.success("🚀 Anti-Spoofing đã sẵn sàng và đang hoạt động!")
+        else:
+            ANTI_SPOOF_AVAILABLE = False
+            logger.warning("⚠️ Anti-Spoofing Service đã nạp nhưng không tìm thấy model. Vui lòng kiểm tra thư mục resources/anti_spoof_models.")
     else:
         ANTI_SPOOF_AVAILABLE = False
+        logger.info("ℹ️ Anti-Spoofing đang bị tắt trong cấu hình.")
 except Exception as e:
     # Lỗi thường gặp trên Laptop: WinError 1114 do Torch DLL
     if anti_spoof_config.enabled:
-        logger.error(f"⚠️ Không thể khởi động Anti-Spoofing (Torch Error): {e}")
+        logger.error(f"⚠️ Không thể khởi động Anti-Spoofing (Lỗi hệ thống): {e}")
         logger.warning("Hệ thống sẽ chạy ở chế độ NHẬN DIỆN THƯỜNG (Tắt chống giả mạo).")
     ANTI_SPOOF_AVAILABLE = False
 

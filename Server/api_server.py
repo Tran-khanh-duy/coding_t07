@@ -18,7 +18,7 @@ import base64
 import threading
 from datetime import datetime
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Optional, Any
 
 from fastapi import FastAPI, HTTPException, Security, Query, Response
 from fastapi.security.api_key import APIKeyHeader
@@ -233,7 +233,8 @@ async def get_frame(camera_id: str = Query(..., description="ID của camera c�
 # ── Dynamic Edge Status ───────────────────────
 class EdgeStatusPayload(BaseModel):
     device_name: str
-    camera_status: dict[str, bool] # { "0": True, "1": False, ... }
+    camera_status: dict[str, Any] # Chấp nhận cả bool hoặc dict {name, source}
+    ip_address: Optional[str] = "Unknown"
     timestamp: str
 
 @app.post("/api/system/edge_status")
@@ -244,6 +245,7 @@ async def update_edge_status(
     """Mini PC báo cáo danh sách camera hiện có."""
     system_state.edge_status_data[payload.device_name] = {
         "camera_status": payload.camera_status,
+        "ip_address": payload.ip_address,
         "last_seen": datetime.now().timestamp()
     }
     

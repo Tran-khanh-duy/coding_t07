@@ -124,6 +124,9 @@ class AppConfig:
     snapshot_dir:   Path = SNAPSHOTS_DIR
     window_width:  int = 1280
     window_height: int = 800
+    
+    # Danh sách các nhóm tòa nhà hiển thị trên Menu chọn Camera
+    camera_groups: list = field(default_factory=lambda: ["KTX E1", "KTX E2", "KTX E3", "KTX E4", "KTX E5", "KTX E6"])
 
 @dataclass
 class AntiSpoofConfig:

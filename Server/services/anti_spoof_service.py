@@ -17,9 +17,23 @@ except ImportError:
 
 
 # Thêm Silent-Face-Anti-Spoofing-master vào sys.path để import các module của nó
-ANTI_SPOOF_ROOT = Path(__file__).parent.parent / "Silent-Face-Anti-Spoofing-master"
-if str(ANTI_SPOOF_ROOT) not in sys.path:
-    sys.path.insert(0, str(ANTI_SPOOF_ROOT))
+# Thử tìm ở Server folder hoặc MINI_PC folder
+base_path = Path(__file__).parent.parent
+ANTI_SPOOF_ROOT = base_path / "Silent-Face-Anti-Spoofing-master"
+if not ANTI_SPOOF_ROOT.exists():
+    # Fallback cho Mini PC (thư mục Silent nằm trong MINI_PC)
+    # Dùng Path(__file__).resolve() để lấy đường dẫn tuyệt đối chính xác nhất
+    current_file = Path(__file__).resolve()
+    # Tìm folder cha chứa cả Server và MINI_PC
+    project_root = current_file.parents[2] 
+    ANTI_SPOOF_ROOT = project_root / "MINI_PC" / "Silent-Face-Anti-Spoofing-master"
+
+if ANTI_SPOOF_ROOT.exists():
+    logger.info(f"✅ Tìm thấy Anti-Spoofing tại: {ANTI_SPOOF_ROOT}")
+    if str(ANTI_SPOOF_ROOT) not in sys.path:
+        sys.path.insert(0, str(ANTI_SPOOF_ROOT))
+else:
+    logger.warning(f"⚠️ Không tìm thấy folder Silent-Face-Anti-Spoofing-master. Vui lòng kiểm tra lại cấu hình.")
 
 try:
     if anti_spoof_config.enabled and TORCH_AVAILABLE:
@@ -60,11 +74,29 @@ class AntiSpoofService:
         self.device = torch.device(f"cuda:{anti_spoof_config.device_id}" 
                                   if torch.cuda.is_available() and anti_spoof_config.device_id >= 0 
                                   else "cpu")
-        self.model_dir = str(anti_spoof_config.model_dir)
+        self.model_dir = Path(anti_spoof_config.model_dir)
         
-        # Khởi tạo predictor và cropper
-        self.predictor = AntiSpoofPredict(anti_spoof_config.device_id if anti_spoof_config.device_id >= 0 else 0)
-        self.image_cropper = CropImage()
+        # Sửa lỗi đường dẫn model khi chạy trên Server
+        if not self.model_dir.exists():
+            # Thử tìm trong thư mục MINI_PC
+            project_root = Path(__file__).resolve().parents[2]
+            fallback_dir = project_root / "MINI_PC" / "Silent-Face-Anti-Spoofing-master" / "resources" / "anti_spoof_models"
+            if fallback_dir.exists():
+                self.model_dir = fallback_dir
+                logger.info(f"📂 Đã tự động chuyển hướng Model Anti-Spoofing sang: {self.model_dir}")
+        
+        self.model_dir = str(self.model_dir)
+        
+        # Khởi tạo predictor và cropper (Chỉ nếu module được import thành công)
+        if AntiSpoofPredict is not None:
+            self.predictor = AntiSpoofPredict(anti_spoof_config.device_id if anti_spoof_config.device_id >= 0 else 0)
+        else:
+            self.predictor = None
+            
+        if CropImage is not None:
+            self.image_cropper = CropImage()
+        else:
+            self.image_cropper = None
         
         # Cache các model để tránh load lại
         self.models_cache = {}
@@ -80,6 +112,8 @@ class AntiSpoofService:
              return
 
         model_files = [f for f in os.listdir(self.model_dir) if f.endswith(".pth")]
+        logger.info(f"🔍 Đang quét model Anti-Spoofing tại: {self.model_dir} (Tìm thấy {len(model_files)} file)")
+        
         for model_name in model_files:
             try:
                 model_path = os.path.join(self.model_dir, model_name)
@@ -106,9 +140,14 @@ class AntiSpoofService:
                     'w_input': w_input,
                     'scale': scale
                 }
-                logger.debug(f"Đã load model Anti-Spoofing: {model_name}")
+                logger.info(f"✅ Đã nạp model Anti-Spoofing: {model_name}")
             except Exception as e:
-                logger.error(f"Lỗi khi load model {model_name}: {e}")
+                logger.error(f"❌ Lỗi khi nạp model {model_name}: {e}")
+        
+        if not self.models_cache:
+            logger.error("❌ KHÔNG NẠP ĐƯỢC MODEL ANTI-SPOOFING NÀO!")
+        else:
+            logger.info(f"🎉 Hoàn tất nạp {len(self.models_cache)} model Anti-Spoofing.")
 
     def is_real(self, frame: np.ndarray, bbox_xyxy: np.ndarray) -> tuple[bool, float]:
         """

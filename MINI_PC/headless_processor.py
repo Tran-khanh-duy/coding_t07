@@ -33,6 +33,9 @@ from edge_client import edge_client
 
 # Registry toàn cục để theo dõi các cổng phần cứng đang bận
 os.environ["OPENCV_VIDEOIO_PRIORITY_OBSENSOR"] = "0" 
+# ÉP FFMPEG CHẠY CHẾ ĐỘ LOW LATENCY CỰC ĐOAN
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp|rtsp_flags;nobuffer|probesize;32|analyzeduration;0|fflags;nobuffer|flags;low_delay"
+
 ACTIVE_SOURCES = set()
 SOURCES_LOCK = threading.Lock()
 
@@ -55,6 +58,7 @@ class CameraWorker(threading.Thread):
         
         # "Trí nhớ ngắn hạn" để giữ tên hiển thị mượt mà trên UI khi bỏ qua frame
         self._last_known_faces = []
+        self._real_face_history = {} # {student_id: count_consecutive_real}
 
     def set_active(self, active: bool):
         self._active = active
@@ -155,18 +159,32 @@ class CameraWorker(threading.Thread):
 
                             if not res.is_real:
                                 self._log_spoof(res)
+                                # Reset bộ đếm xác thực nếu phát hiện giả mạo
+                                if res.student_id in self._real_face_history:
+                                    self._real_face_history[res.student_id] = 0
                                 continue
 
                             if res.recognized:
+                                # Tăng bộ đếm xác thực người thật
+                                current_count = self._real_face_history.get(res.student_id, 0)
+                                self._real_face_history[res.student_id] = current_count + 1
+                                
+                                # Chỉ gửi điểm danh nếu đã xác nhận 3 lần liên tiếp là người thật
+                                if self._real_face_history[res.student_id] < 3:
+                                    logger.debug(f"⏳ [{self.camera_id}] Đang xác thực [{res.full_name}] ({self._real_face_history[res.student_id]}/3)")
+                                    continue
+
                                 remaining = edge_client.check_cooldown(res.student_id)
                                 if remaining <= 0:
-                                    logger.info(f"👤 [{self.camera_id}] Nhận diện: {res.full_name}")
+                                    logger.info(f"👤 [{self.camera_id}] Nhận diện thành công: {res.full_name} (Xác thực 3/3)")
                                     edge_client.send_attendance(
                                         embedding=detected[i].embedding,
                                         liveness_score=spoof_score,
                                         liveness_checked=ANTI_SPOOF_AVAILABLE,
                                     )
                                     edge_client.set_cooldown(res.student_id)
+                                    # Reset bộ đếm sau khi điểm danh thành công
+                                    self._real_face_history[res.student_id] = 0
 
                     # 3. Gửi Frame cho Server (Nếu đang Preview)
                     if is_preview_step:
@@ -210,51 +228,36 @@ class CameraWorker(threading.Thread):
 
     def _open_camera(self):
         source = self.source
-        try:
-            initial_src = int(source)
-        except (ValueError, TypeError):
-            initial_src = source
-            
-        search_queue = [initial_src]
-        if isinstance(initial_src, int):
-            for alt in range(11):
-                if alt not in search_queue:
-                    search_queue.append(alt)
+        logger.info(f"📸 [{self.camera_id}] Đang kết nối siêu tốc: {source}")
         
-        for cam_source in search_queue:
+        try:
             with SOURCES_LOCK:
-                if cam_source in ACTIVE_SOURCES:
-                    continue
-                ACTIVE_SOURCES.add(cam_source)
-            
-            logger.info(f"📸 [{self.camera_id}] Thử mở Camera: source='{cam_source}'")
-            try:
-                if isinstance(cam_source, int):
-                    self._cap = cv2.VideoCapture(cam_source, cv2.CAP_DSHOW)
-                    if not (self._cap and self._cap.isOpened()):
-                        self._cap = cv2.VideoCapture(cam_source, cv2.CAP_ANY)
-                else:
-                    self._cap = cv2.VideoCapture(cam_source, cv2.CAP_FFMPEG)
-                    if not (self._cap and self._cap.isOpened()):
-                        self._cap = cv2.VideoCapture(cam_source, cv2.CAP_ANY)
+                if source in ACTIVE_SOURCES: return
+                ACTIVE_SOURCES.add(source)
 
-                if self._cap and self._cap.isOpened():
-                    self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, camera_config.width)
-                    self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, camera_config.height)
-                    self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                    self.source = cam_source 
-                    logger.info(f"📸 [{self.camera_id}] Đã mở thành công tại source {cam_source}.")
-                    return
-                else:
-                    with SOURCES_LOCK:
-                        ACTIVE_SOURCES.remove(cam_source)
-            except Exception as e:
-                logger.error(f"❌ [{self.camera_id}] Lỗi khi mở {cam_source}: {e}")
-                with SOURCES_LOCK:
-                    if cam_source in ACTIVE_SOURCES:
-                        ACTIVE_SOURCES.remove(cam_source)
-            
-        logger.error(f"❌ [{self.camera_id}] Thất bại hoàn toàn sau khi thử các cổng {search_queue}")
+            # Phân loại và mở thẳng backend tối ưu
+            try:
+                cam_idx = int(source)
+                self._cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+            except:
+                # Ép FFMPEG cho RTSP
+                self._cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                # Một số phiên bản OpenCV hỗ trợ set timeout trực tiếp
+                self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
+
+            if self._cap and self._cap.isOpened():
+                # Thiết lập nhanh, bỏ qua các bước không cần thiết
+                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                logger.info(f"✅ [{self.camera_id}] Đã kết nối thành công!")
+                return
+            else:
+                if self._cap: self._cap.release()
+                with SOURCES_LOCK: ACTIVE_SOURCES.remove(source)
+                logger.error(f"❌ [{self.camera_id}] Không thể mở source: {source}")
+        except Exception as e:
+            logger.error(f"❌ [{self.camera_id}] Lỗi nghiêm trọng khi mở camera: {e}")
+            with SOURCES_LOCK: 
+                if source in ACTIVE_SOURCES: ACTIVE_SOURCES.remove(source)
 
     def _upload_frame_async(self, frame, dets=None):
         if self._is_uploading:
@@ -392,8 +395,8 @@ class HeadlessProcessor:
         while self._running:
             now = time.time()
             
-            # Cứ mỗi 2 giây, Mini PC sẽ gọi API lên Server để "hỏi" xem có lệnh mới không
-            if now - last_command_check >= 2.0:
+            # Cứ mỗi 1 giây, Mini PC sẽ gọi API lên Server để "hỏi" xem có lệnh mới không
+            if now - last_command_check >= 1.0:
                 last_command_check = now
                 try:
                     cmd_data = edge_client.get_system_command_raw()
@@ -455,7 +458,7 @@ class HeadlessProcessor:
                 self._last_embed_refresh = now
                 edge_client.pull_embeddings()
 
-            time.sleep(0.5)
+            time.sleep(0.1)
 
     def stop(self):
         self._running = False

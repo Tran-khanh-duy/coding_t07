@@ -691,7 +691,7 @@ class AttendancePage(QWidget):
                         break
                 
                 if group:
-                    if source: self._cam_groups[group].append((cam.camera_name, source))
+                    if source: self._cam_groups[group].append((cam.camera_name, source, "Local"))
 
             # [NEW] Xây dựng slot camera mặc định cho Mini PC từ dữ liệu Live (Qua API Port 9696)
             try:
@@ -709,8 +709,23 @@ class AttendancePage(QWidget):
                                 self._cam_groups[group_key] = []
                             
                             for k, v in status.items():
-                                if not v:
-                                    continue
+                                cam_name = k
+                                cam_source = v
+                                if isinstance(v, dict):
+                                    cam_name = v.get("name", k)
+                                    cam_source = v.get("source", "")
+                                
+                                # Trích xuất IP từ source
+                                cam_ip = ""
+                                if isinstance(cam_source, str) and cam_source.startswith("rtsp://"):
+                                    try:
+                                        cam_ip = cam_source.split("@")[1].split("/")[0] if "@" in cam_source else cam_source.split("://")[1].split("/")[0]
+                                    except:
+                                        cam_ip = ""
+
+                                # Trạng thái hiển thị
+                                display_ip = cam_ip if cam_ip else "OFFLINE"
+
                                 # Camera RTSP URL đầy đủ từ ONVIF discovery
                                 if k.startswith("rtsp://"):
                                     try:
@@ -718,19 +733,17 @@ class AttendancePage(QWidget):
                                     except:
                                         ip_port = "IP Cam"
                                     label = f"🟢 IP Cam ({ip_port}) [ONLINE]"
-                                    source = k  # Dùng RTSP URL làm source cho RemoteStreamWorker
+                                    source = k
+                                    self._cam_groups[group_key].append((label, source, ip_port))
                                 else:
-                                    # Map CAM_01 -> Tầng 1 cho đẹp
-                                    display_name = k
-                                    if k == "CAM_01": display_name = "Tầng 1"
-                                    elif k == "CAM_02": display_name = "Tầng 2"
-                                    elif k == "CAM_03": display_name = "Tầng 3"
-                                    elif k == "CAM_04": display_name = "Tầng 4"
-                                    elif k == "CAM_05": display_name = "Tầng 5"
+                                    # Sử dụng tên "cứng" từ Edge config (env.edge)
+                                    if display_ip == "OFFLINE":
+                                        label = f"⚪ {cam_name} [OFFLINE]"
+                                    else:
+                                        label = f"🟢 {cam_name} ({display_ip}) [ONLINE]"
                                     
-                                    label = f"🟢 {display_name} [ONLINE]"
-                                    source = k  # Dùng đúng Camera ID để khớp với frame upload
-                                self._cam_groups[group_key].append((label, source))
+                                    source = k
+                                    self._cam_groups[group_key].append((label, source, display_ip))
 
             except Exception as e:
                 logger.warning(f"Không lấy được trạng thái live: {e}")
@@ -744,7 +757,7 @@ class AttendancePage(QWidget):
                 QMenu::separator {{ height: 1px; background: {Colors.BORDER}; margin: 5px 10px; }}
             """)
 
-            groups_to_render = [f"KTX E{i}" for i in range(1, 7)]
+            groups_to_render = list(app_config.camera_groups)
             for k in self._cam_groups.keys():
                 if k not in groups_to_render:
                     groups_to_render.append(k)
@@ -752,10 +765,11 @@ class AttendancePage(QWidget):
             for g_name in groups_to_render:
                 cams = self._cam_groups.get(g_name, [])
                 
-                # Tạo placeholder cho 5 tầng nếu KTX này chưa có cấu hình Camera 
-                if not cams and g_name.startswith("KTX E"):
+                # Tạo placeholder cho 5 tầng nếu tòa nhà này thuộc danh sách cấu hình nhưng chưa có camera Online
+                is_configured_ktx = any(g_name == g for g in app_config.camera_groups)
+                if not cams and is_configured_ktx:
                     for i in range(1, 6):
-                        cams.append((f"⚪ Tầng {i} [OFFLINE]", f"OFFLINE_{g_name}_{i}"))
+                        cams.append((f"⚪ Tầng {i} [OFFLINE]", f"OFFLINE_{g_name}_{i}", "OFFLINE"))
                         
                 if not cams: continue
                 
@@ -763,7 +777,7 @@ class AttendancePage(QWidget):
                 sub_menu = main_menu.addMenu(f"{icon}  {g_name}")
                 sub_menu.setStyleSheet(main_menu.styleSheet())
                 
-                for c_name, source in cams:
+                for c_name, source, _ip in cams:
                     act = sub_menu.addAction(f"📷 {c_name}")
                     act.triggered.connect(lambda chk, s=source, n=c_name: self._on_camera_selected(s, n))
             
@@ -771,10 +785,10 @@ class AttendancePage(QWidget):
 
             # Mặc định hiển thị label KTX E4 nếu có
             if self._cam_groups.get("KTX E4"):
-                c_name, source = self._cam_groups["KTX E4"][0]
+                c_name, source, _ip = self._cam_groups["KTX E4"][0]
                 self._lbl_current_cam.setText(f"🎥 KTX E4 - {c_name.split(' ')[1]}")
             elif self._cam_groups.get("KTX E1"):
-                c_name, source = self._cam_groups["KTX E1"][0]
+                c_name, source, _ip = self._cam_groups["KTX E1"][0]
                 self._lbl_current_cam.setText(f"🎥 KTX E1 - {c_name.split(' ')[1]}")
             
         except Exception as e:

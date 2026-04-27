@@ -139,25 +139,41 @@ class EdgeClient:
 
     # ─── Dynamic Camera Detection ──────────────
 
+    def _get_local_ip(self) -> str:
+        """Lấy địa chỉ IP mạng nội bộ của máy."""
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Không cần kết nối thực sự, chỉ để lấy IP interface
+            s.connect(('10.255.255.255', 1))
+            IP = s.getsockname()[0]
+        except Exception:
+            IP = '127.0.0.1'
+        finally:
+            s.close()
+        return IP
+
     def report_status(self):
         """Kiểm tra các cổng camera và báo cáo về Server."""
         try:
             status_map = {}
 
-            # [FIX] Dùng đúng Camera ID (CAM_01, CAM_02...) thay vì index số ("0", "1"...)
-            # Để UI có thể map đúng với frame được upload lên
-            # Luôn báo cáo danh sách camera được cấu hình là có sẵn (để UI không xóa mất dropdown button)
+            # [FIX] Gửi cả Tên và Source của Camera
             for cam in edge_config.camera_list:
-                status_map[cam["id"]] = True
+                status_map[cam["id"]] = {
+                    "name": cam["name"],
+                    "source": cam["source"]
+                }
 
-            # Bỏ qua _active_status_cache kiểm tra False vì ta luôn cần hiện trên UI để gọi dậy từ Standby
+            # Bổ sung các camera đang hoạt động khác nếu có
             for cam_id, is_active in self._active_status_cache.items():
                 if is_active and cam_id not in status_map:
-                    status_map[cam_id] = True
+                    status_map[cam_id] = True # Fallback nếu không có source cụ thể
 
             payload = {
                 "device_name": edge_config.device_name,
                 "camera_status": status_map,
+                "ip_address": self._get_local_ip(), # Vẫn giữ IP Box để tham khảo
                 "timestamp": datetime.now().isoformat()
             }
             
