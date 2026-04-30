@@ -36,21 +36,21 @@ from database.models import EmbeddingCache
 try:
     if anti_spoof_config.enabled:
         from services.anti_spoof_service import anti_spoof_service
-        if anti_spoof_service is not None:
+        if anti_spoof_service and anti_spoof_service.available:
             ANTI_SPOOF_AVAILABLE = True
-            logger.success("🚀 Anti-Spoofing Module đã import thành công. Model sẽ được load lazily!")
+            logger.success("🚀 Anti-Spoofing đã sẵn sàng và đang hoạt động!")
         else:
             ANTI_SPOOF_AVAILABLE = False
-            logger.warning("⚠️ Không thể khởi tạo Anti-Spoofing Service.")
+            logger.warning("⚠️ Anti-Spoofing Service khởi tạo thất bại. Kiểm tra log phía trên.")
     else:
         ANTI_SPOOF_AVAILABLE = False
         logger.info("ℹ️ Anti-Spoofing đang bị tắt trong cấu hình.")
 except Exception as e:
-    # Lỗi thường gặp trên Laptop: WinError 1114 do Torch DLL
     if anti_spoof_config.enabled:
         logger.error(f"⚠️ Không thể khởi động Anti-Spoofing (Lỗi hệ thống): {e}")
         logger.warning("Hệ thống sẽ chạy ở chế độ NHẬN DIỆN THƯỜNG (Tắt chống giả mạo).")
     ANTI_SPOOF_AVAILABLE = False
+
 
 
 # ─────────────────────────────────────────────
@@ -221,9 +221,11 @@ class FaceEngine:
     def unload_model(self):
         """Giải phóng model khỏi GPU/RAM để tránh tràn bộ nhớ."""
         with self._load_lock:
-            if self._app:
-                del self._app
-                self._app = None
+            # Acquire inference lock trước để đảm bảo detect_faces đã xong
+            with self._inference_lock:
+                if self._app:
+                    del self._app
+                    self._app = None
             self._model_loaded = False
             
             import gc
@@ -244,8 +246,11 @@ class FaceEngine:
             return []
 
         try:
-            # Khóa luồng khi quét qua Neural Network để tránh crash vRAM
+            # Đặt kiểm tra lại TRONG lock để tránh race condition với unload_model()
+            # (unload_model() cũng acquire _inference_lock trước khi xóa self._app)
             with self._inference_lock:
+                if self._app is None:   # Re-check sau khi có lock
+                    return []
                 faces = self._app.get(frame)
                 
             result = []
@@ -263,6 +268,7 @@ class FaceEngine:
         except Exception as e:
             logger.error(f"Lỗi detect_faces: {e}")
             return []
+
 
 
     # ─── NÂNG CẤP 2: Nhận diện HÀNG LOẠT (Batch Processing) ───

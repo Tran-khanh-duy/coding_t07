@@ -21,11 +21,16 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from config import edge_config, ai_config, anti_spoof_config, camera_config
-from services.face_engine import face_engine, ANTI_SPOOF_AVAILABLE
+from services.face_engine import face_engine
 try:
     from services.anti_spoof_service import anti_spoof_service
+    ANTI_SPOOF_AVAILABLE = anti_spoof_service.available
+    if ANTI_SPOOF_AVAILABLE:
+        logger.success("🚀 [Edge] Anti-Spoofing đã sẵn sàng!")
+    else:
+        logger.warning("⚠️ [Edge] Anti-Spoofing không khả dụng.")
 except Exception as e:
-    logger.warning(f"AntiSpoofPredict không khả dụng: {e}")
+    logger.warning(f"[Edge] Anti-Spoofing import thất bại: {e}")
     anti_spoof_service = None
     ANTI_SPOOF_AVAILABLE = False
 
@@ -167,7 +172,10 @@ class CameraWorker:
                     for i, res in enumerate(results):
                         is_real = True
                         spoof_score = 1.0
-                        if ANTI_SPOOF_AVAILABLE and anti_spoof_service:
+                        
+                        # Anti-Spoofing CHỈ chạy khi điểm danh đang bật
+                        # Nếu chỉ xem Preview (chưa START), bỏ qua để tránh spam log
+                        if self._attendance_enabled and ANTI_SPOOF_AVAILABLE and anti_spoof_service:
                             is_real, spoof_score = anti_spoof_service.is_real(frame, res.bbox)
                             res.is_real = is_real
                             res.spoof_score = spoof_score
@@ -182,8 +190,8 @@ class CameraWorker:
                             "color_type": color_val
                         })
 
-                        # Xử lý điểm danh (chỉ khi là người thật)
-                        if res.is_real and res.recognized:
+                        # Xử lý điểm danh (chỉ khi là người thật VÀ đã nhận diện được)
+                        if self._attendance_enabled and res.is_real and res.recognized:
                             current_count = self._real_face_history.get(res.student_id, 0)
                             self._real_face_history[res.student_id] = current_count + 1
                             
@@ -198,7 +206,8 @@ class CameraWorker:
                                     )
                                     edge_client.set_cooldown(res.student_id, self.camera_id)
                                     self._real_face_history[res.student_id] = 0
-                        elif not res.is_real:
+                        elif self._attendance_enabled and not res.is_real and res.recognized:
+                            # Chỉ log spoof cho người đã nhận diện được (không log Unknown)
                             self._log_spoof(res)
                             self._real_face_history[res.student_id] = 0
 
@@ -323,9 +332,12 @@ class CameraWorker:
 
     def _log_spoof(self, res):
         now = time.time()
-        key = res.student_id if res.recognized else "unknown"
-        if now - self._spoof_log_cache.get(key, 0) > 5.0:
-            logger.warning(f"🚫 [{self.camera_id}] Phát hiện GIẢ MẠO: {res.display_name}")
+        # Chỉ log spoof cho học viên đã nhận diện được, với cooldown 30 giây
+        if not res.recognized:
+            return
+        key = res.student_id
+        if now - self._spoof_log_cache.get(key, 0) > 30.0:
+            logger.warning(f"🚫 [{self.camera_id}] Phát hiện GIẢ MẠO: {res.display_name} | Score: {res.spoof_score:.1%}")
             self._spoof_log_cache[key] = now
 
 class HeadlessProcessor:

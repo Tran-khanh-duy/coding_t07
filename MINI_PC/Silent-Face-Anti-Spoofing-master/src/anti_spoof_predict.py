@@ -27,16 +27,9 @@ MODEL_MAPPING = {
 
 class Detection:
     def __init__(self):
-        # Fix relative paths to work from any CWD
-        src_dir = os.path.dirname(os.path.abspath(__file__))
-        resources_dir = os.path.join(os.path.dirname(src_dir), "resources")
-        
-        caffemodel = os.path.join(resources_dir, "detection_model", "Widerface-RetinaFace.caffemodel")
-        deploy = os.path.join(resources_dir, "detection_model", "deploy.prototxt")
-        
-        if not os.path.exists(caffemodel) or not os.path.exists(deploy):
-            raise FileNotFoundError(f"Detection model files not found: {caffemodel} or {deploy}")
-            
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        caffemodel = os.path.join(base_dir, "resources", "detection_model", "Widerface-RetinaFace.caffemodel")
+        deploy = os.path.join(base_dir, "resources", "detection_model", "deploy.prototxt")
         self.detector = cv2.dnn.readNetFromCaffe(deploy, caffemodel)
         self.detector_confidence = 0.6
 
