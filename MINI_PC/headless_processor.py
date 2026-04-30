@@ -39,26 +39,33 @@ os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;udp|rtsp_flags;nob
 ACTIVE_SOURCES = set()
 SOURCES_LOCK = threading.Lock()
 
-class CameraWorker(threading.Thread):
-    """Luồng xử lý cho một camera cụ thể."""
+class CameraWorker:
+    """Luồng xử lý cho một camera cụ thể - Đã tách riêng Capture, AI và LiveView."""
     
     def __init__(self, camera_id: str, source: str):
-        super().__init__(name=f"Worker-{camera_id}", daemon=True)
         self.camera_id = camera_id
         self.source = source
         self._running = False
-        self._cap = None
+        
+        # Trạng thái điều khiển
         self._active = False 
         self._is_previewing = False 
         self._attendance_enabled = False 
         
-        # Trạng thái truyền tải
-        self._is_uploading = False
-        self._spoof_log_cache = {}
+        # Buffer dữ liệu dùng chung giữa các thread
+        self._latest_frame = None
+        self._latest_dets = []      # Kết quả AI mới nhất [x1, y1, x2, y2, name, color_type]
+        self._frame_lock = threading.Lock()
         
-        # "Trí nhớ ngắn hạn" để giữ tên hiển thị mượt mà trên UI khi bỏ qua frame
+        # "Trí nhớ ngắn hạn" cho tracking nội suy và xác thực
         self._last_known_faces = []
         self._real_face_history = {} # {student_id: count_consecutive_real}
+        self._spoof_log_cache = {}
+
+        # Threads
+        self._capture_thread = None
+        self._ai_thread = None
+        self._live_thread = None
 
     def set_active(self, active: bool):
         self._active = active
@@ -67,282 +74,250 @@ class CameraWorker(threading.Thread):
         self._is_previewing = previewing
 
     def set_attendance_enabled(self, enabled: bool):
-        # Chỉ những camera là RTSP mới được phép bật nhận diện (attendance)
-        if enabled and str(self.source).startswith("rtsp://"):
-            self._attendance_enabled = True
-        else:
-            self._attendance_enabled = False
+        self._attendance_enabled = enabled
 
-    def run(self):
+    def start(self):
+        if self._running: return
         self._running = True
-        frame_count = 0
-        last_frame_upload = 0.0
         
-        logger.info(f"🚀 Bắt đầu Worker thread cho camera: {self.camera_id} (Source: {self.source})")
+        # 1. Luồng Capture: Chỉ đọc ảnh từ Camera và đẩy vào Buffer
+        self._capture_thread = threading.Thread(target=self._capture_loop, name=f"Cap-{self.camera_id}", daemon=True)
+        self._capture_thread.start()
         
+        # 2. Luồng AI: Lấy ảnh từ Buffer và chạy Detection/Recognition
+        self._ai_thread = threading.Thread(target=self._ai_loop, name=f"AI-{self.camera_id}", daemon=True)
+        self._ai_thread.start()
+        
+        # 3. Luồng LiveView: Lấy ảnh + Kết quả AI và upload lên Server
+        self._live_thread = threading.Thread(target=self._live_loop, name=f"Live-{self.camera_id}", daemon=True)
+        self._live_thread.start()
+        
+        # Khởi tạo cache độc lập cho camera này
+        threading.Thread(target=lambda: edge_client.pull_embeddings(self.camera_id), daemon=True).start()
+        
+        logger.info(f"🚀 CameraWorker {self.camera_id} đã khởi động với 3 luồng riêng biệt.")
+
+    def _capture_loop(self):
+        """Luồng đọc Camera: Phải chạy liên tục để không bị trễ buffer."""
+        cap = None
         while self._running:
             if not self._active and not self._is_previewing:
-                if self._cap:
-                    self._cap.release()
-                    self._cap = None
+                if cap:
+                    cap.release()
+                    cap = None
                     edge_client.update_active_status(self.camera_id, False)
                     with SOURCES_LOCK:
-                        if self.source in ACTIVE_SOURCES:
-                            ACTIVE_SOURCES.remove(self.source)
-                    logger.info(f"⏹️ Camera {self.camera_id}: Đã giải phóng tài nguyên {self.source}")
+                        if self.source in ACTIVE_SOURCES: ACTIVE_SOURCES.remove(self.source)
+                time.sleep(0.5)
+                continue
+
+            if cap is None or not cap.isOpened():
+                cap = self._open_camera_backend()
+                if cap is None:
+                    time.sleep(2)
+                    continue
+
+            edge_client.update_active_status(self.camera_id, True)
+            ret, frame = cap.read()
+            if not ret:
+                logger.warning(f"⚠️ Camera {self.camera_id}: Mất tín hiệu, đang thử lại...")
+                cap.release()
+                cap = None
+                edge_client.update_active_status(self.camera_id, False)
                 time.sleep(1)
                 continue
 
-            if self._cap is None or not self._cap.isOpened():
-                self._open_camera()
-                if self._cap is None or not self._cap.isOpened():
-                    edge_client.update_active_status(self.camera_id, False)
-                    time.sleep(2)
-                    continue
-            
-            edge_client.update_active_status(self.camera_id, True)
+            with self._frame_lock:
+                self._latest_frame = frame
 
-            ret, frame = self._cap.read()
-            if not ret:
-                logger.warning(f"⚠️ Camera {self.camera_id}: Mất tín hiệu, đang thử lại...")
-                edge_client.update_active_status(self.camera_id, False)
-                if self._cap:
-                    self._cap.release()
-                    self._cap = None
-                with SOURCES_LOCK:
-                    if hasattr(self, 'source') and self.source in ACTIVE_SOURCES:
-                        ACTIVE_SOURCES.remove(self.source)
-                time.sleep(1)
+        if cap: cap.release()
+
+    def _ai_loop(self):
+        """Luồng xử lý AI: Chạy theo tốc độ của GPU/CPU."""
+        frame_count = 0
+        while self._running:
+            if not self._active or not self._attendance_enabled:
+                self._last_known_faces = []
+                time.sleep(0.5)
+                continue
+                
+            frame = None
+            with self._frame_lock:
+                if self._latest_frame is not None:
+                    frame = self._latest_frame.copy()
+            
+            if frame is None:
+                time.sleep(0.01)
                 continue
 
             frame_count += 1
-            now = time.time()
+            # Xử lý mỗi N frame để tiết kiệm tài nguyên
+            if frame_count % edge_config.process_every_n != 0:
+                time.sleep(0.01)
+                continue
 
-            is_recognition_step = (frame_count % edge_config.process_every_n == 0) and self._active and self._attendance_enabled
-            is_preview_step = self._is_previewing and (now - last_frame_upload >= 0.1)
-
-            if is_recognition_step or is_preview_step:
-                try:
-                    # 1. Phát hiện khuôn mặt
-                    detected = face_engine.detect_faces(frame)
+            try:
+                # 1. Phát hiện & Nhận diện
+                detected = face_engine.detect_faces(frame)
+                if detected:
+                    cache = edge_client.get_cache(self.camera_id)
+                    results = face_engine.recognize_batch(detected, cache)
                     
-                    # 2. Nhận diện (Chỉ thực hiện ở recognition step)
-                    if is_recognition_step and detected:
-                        cache = edge_client.get_cache()
-                        results = face_engine.recognize_batch(detected, cache)
+                    new_known_faces = []
+                    for i, res in enumerate(results):
+                        is_real = True
+                        spoof_score = 1.0
+                        if ANTI_SPOOF_AVAILABLE and anti_spoof_service:
+                            is_real, spoof_score = anti_spoof_service.is_real(frame, res.bbox)
+                            res.is_real = is_real
+                            res.spoof_score = spoof_score
                         
-                        # Xóa trí nhớ cũ trước khi cập nhật kết quả nhận diện mới nhất
-                        self._last_known_faces = []
+                        color_val = "unknown"
+                        if res.recognized:
+                            color_val = "success" if res.is_real else "danger"
                         
-                        for i, res in enumerate(results):
-                            is_real = True
-                            spoof_score = 1.0
-                            if ANTI_SPOOF_AVAILABLE and anti_spoof_service:
-                                is_real, spoof_score = anti_spoof_service.is_real(frame, res.bbox)
-                                res.is_real = is_real
-                                res.spoof_score = spoof_score
+                        new_known_faces.append({
+                            "bbox": detected[i].bbox,
+                            "name": res.display_name if res.recognized else "Unknown",
+                            "color_type": color_val
+                        })
+
+                        # Xử lý điểm danh (chỉ khi là người thật)
+                        if res.is_real and res.recognized:
+                            current_count = self._real_face_history.get(res.student_id, 0)
+                            self._real_face_history[res.student_id] = current_count + 1
                             
-                            # Ghi nhớ khuôn mặt này để vẽ khung trên UI
-                            if res.recognized:
-                                color_val = "success" if res.is_real else "danger"
-                                self._last_known_faces.append({
-                                    "bbox": detected[i].bbox,
-                                    "name": res.full_name,
-                                    "color_type": color_val
-                                })
-                            else:
-                                self._last_known_faces.append({
-                                    "bbox": detected[i].bbox,
-                                    "name": "Unknown",
-                                    "color_type": "unknown"
-                                })
-
-                            if not res.is_real:
-                                self._log_spoof(res)
-                                # Reset bộ đếm xác thực nếu phát hiện giả mạo
-                                if res.student_id in self._real_face_history:
-                                    self._real_face_history[res.student_id] = 0
-                                continue
-
-                            if res.recognized:
-                                # Tăng bộ đếm xác thực người thật
-                                current_count = self._real_face_history.get(res.student_id, 0)
-                                self._real_face_history[res.student_id] = current_count + 1
-                                
-                                # Chỉ gửi điểm danh nếu đã xác nhận 3 lần liên tiếp là người thật
-                                if self._real_face_history[res.student_id] < 3:
-                                    logger.debug(f"⏳ [{self.camera_id}] Đang xác thực [{res.full_name}] ({self._real_face_history[res.student_id]}/3)")
-                                    continue
-
-                                remaining = edge_client.check_cooldown(res.student_id)
+                            if self._real_face_history[res.student_id] >= 3:
+                                remaining = edge_client.check_cooldown(res.student_id, self.camera_id)
                                 if remaining <= 0:
-                                    logger.info(f"👤 [{self.camera_id}] Nhận diện thành công: {res.full_name} (Xác thực 3/3)")
                                     edge_client.send_attendance(
                                         embedding=detected[i].embedding,
+                                        camera_id=self.camera_id,
                                         liveness_score=spoof_score,
                                         liveness_checked=ANTI_SPOOF_AVAILABLE,
                                     )
-                                    edge_client.set_cooldown(res.student_id)
-                                    # Reset bộ đếm sau khi điểm danh thành công
+                                    edge_client.set_cooldown(res.student_id, self.camera_id)
                                     self._real_face_history[res.student_id] = 0
+                        elif not res.is_real:
+                            self._log_spoof(res)
+                            self._real_face_history[res.student_id] = 0
 
-                    # 3. Gửi Frame cho Server (Nếu đang Preview)
-                    if is_preview_step:
-                        last_frame_upload = now
-                        dets_payload = []
-                        if detected:
-                            for det in detected:
-                                name = "Unknown"
-                                color_type = "unknown"
-                                
-                                # Tracking nội suy: Tìm khuôn mặt trong "trí nhớ" khớp với vị trí hiện tại
-                                cx = (det.bbox[0] + det.bbox[2]) / 2
-                                cy = (det.bbox[1] + det.bbox[3]) / 2
-                                min_dist = float('inf')
-                                best_match = None
-                                
-                                for known in self._last_known_faces:
-                                    kx = (known['bbox'][0] + known['bbox'][2]) / 2
-                                    ky = (known['bbox'][1] + known['bbox'][3]) / 2
-                                    dist = ((cx - kx)**2 + (cy - ky)**2)**0.5
-                                    if dist < 150 and dist < min_dist:
-                                        min_dist = dist
-                                        best_match = known
-                                
-                                if best_match:
-                                    name = best_match['name']
-                                    color_type = best_match['color_type']
+                    self._last_known_faces = new_known_faces
+                else:
+                    self._last_known_faces = []
+            except Exception as e:
+                logger.error(f"❌ AI Loop Error [{self.camera_id}]: {e}")
+            
+            time.sleep(0.005)
 
-                                dets_payload.append([
-                                    int(det.bbox[0]), int(det.bbox[1]), 
-                                    int(det.bbox[2]), int(det.bbox[3]),
-                                    name, color_type
-                                ])
-                        self._upload_frame_async(frame, dets_payload)
+    def _live_loop(self):
+        """Luồng Live View: Vẽ và gửi ảnh lên Server (Tách riêng khỏi AI)."""
+        last_upload = 0
+        while self._running:
+            if not self._is_previewing:
+                time.sleep(0.5)
+                continue
+            
+            now = time.time()
+            if now - last_upload < 0.05: # Giới hạn 20 FPS cho Live View để mượt hơn
+                time.sleep(0.01)
+                continue
 
-                except Exception as e:
-                    logger.error(f"❌ [{self.camera_id}] Lỗi AI Pipeline: {e}")
+            frame = None
+            with self._frame_lock:
+                if self._latest_frame is not None:
+                    frame = self._latest_frame.copy()
+            
+            if frame is None:
+                time.sleep(0.05)
+                continue
 
-        if self._cap:
-            self._cap.release()
+            last_upload = now
+            try:
+                # Lấy kết quả AI mới nhất để vẽ (nội suy)
+                known_faces = self._last_known_faces
+                dets_payload = []
+                
+                # Vẽ và chuẩn bị payload
+                if known_faces:
+                    for face in known_faces:
+                        x1, y1, x2, y2 = face['bbox']
+                        name = face['name']
+                        color_type = face['color_type']
+                        dets_payload.append([int(x1), int(y1), int(x2), int(y2), name, color_type])
+                
+                # Thực hiện vẽ và upload (vẫn dùng thread ephemeral để không block loop này)
+                self._upload_frame_async(frame, dets_payload)
+            except Exception as e:
+                logger.error(f"❌ Live Loop Error [{self.camera_id}]: {e}")
 
-    def _open_camera(self):
+    def _open_camera_backend(self):
         source = self.source
-        logger.info(f"📸 [{self.camera_id}] Đang kết nối siêu tốc: {source}")
-        
+        with SOURCES_LOCK:
+            if source in ACTIVE_SOURCES: return None
+            ACTIVE_SOURCES.add(source)
         try:
-            with SOURCES_LOCK:
-                if source in ACTIVE_SOURCES: return
-                ACTIVE_SOURCES.add(source)
-
-            # Phân loại và mở thẳng backend tối ưu
             try:
                 cam_idx = int(source)
-                self._cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
+                cap = cv2.VideoCapture(cam_idx, cv2.CAP_DSHOW)
             except:
-                # Ép FFMPEG cho RTSP
-                self._cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-                # Một số phiên bản OpenCV hỗ trợ set timeout trực tiếp
-                self._cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
-
-            if self._cap and self._cap.isOpened():
-                # Thiết lập nhanh, bỏ qua các bước không cần thiết
-                self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                logger.info(f"✅ [{self.camera_id}] Đã kết nối thành công!")
-                return
+                cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+                cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 3000)
+            if cap and cap.isOpened():
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                return cap
             else:
-                if self._cap: self._cap.release()
                 with SOURCES_LOCK: ACTIVE_SOURCES.remove(source)
-                logger.error(f"❌ [{self.camera_id}] Không thể mở source: {source}")
-        except Exception as e:
-            logger.error(f"❌ [{self.camera_id}] Lỗi nghiêm trọng khi mở camera: {e}")
+                return None
+        except:
             with SOURCES_LOCK: 
                 if source in ACTIVE_SOURCES: ACTIVE_SOURCES.remove(source)
+            return None
 
     def _upload_frame_async(self, frame, dets=None):
-        if self._is_uploading:
-            return 
-            
+        # Giữ nguyên logic vẽ và upload cũ nhưng bọc trong try/except
         cam_id = self.camera_id
         def task():
-            self._is_uploading = True
             try:
-                # Copy frame để tránh xung đột luồng
-                frame_copy = frame.copy()
-                
+                frame_copy = frame # Đã copy ở loop ngoài rồi
                 if dets:
-                    # 1. Vẽ viền Bounding Box bằng OpenCV (tốc độ cao)
                     for det in dets:
                         x1, y1, x2, y2, name, color_type = det
-                        if color_type == "success": color_cv = (0, 255, 0)   
-                        elif color_type == "danger": color_cv = (0, 0, 255)   
-                        else: color_cv = (0, 255, 255) 
+                        color_cv = (0, 255, 0) if color_type == "success" else (0, 0, 255) if color_type == "danger" else (0, 255, 255)
                         cv2.rectangle(frame_copy, (x1, y1), (x2, y2), color_cv, 4)
 
-                    # 2. Vẽ Chữ Tiếng Việt bằng Pillow (PIL)
+                    # Vẽ Tiếng Việt
                     frame_rgb = cv2.cvtColor(frame_copy, cv2.COLOR_BGR2RGB)
                     pil_img = Image.fromarray(frame_rgb)
                     draw = ImageDraw.Draw(pil_img)
-
-                    # TĂNG CỠ CHỮ LÊN 1.5 LẦN VÀ DÙNG FONT ĐẬM
                     font_size = 52
-                    try:
-                        font = ImageFont.truetype("arialbd.ttf", font_size)
-                    except IOError:
-                        try:
-                            font = ImageFont.truetype("arial.ttf", font_size)
-                        except IOError:
-                            font = ImageFont.load_default()
+                    try: font = ImageFont.truetype("arialbd.ttf", font_size)
+                    except: 
+                        try: font = ImageFont.truetype("arial.ttf", font_size)
+                        except: font = ImageFont.load_default()
 
                     for det in dets:
                         x1, y1, x2, y2, name, color_type = det
-                        if color_type == "success": color_pil = (0, 255, 0)   
-                        elif color_type == "danger": color_pil = (255, 0, 0)   
-                        else: color_pil = (255, 255, 0)
-
+                        color_pil = (0, 255, 0) if color_type == "success" else (255, 0, 0) if color_type == "danger" else (255, 255, 0)
                         if hasattr(font, 'getbbox'):
-                            bbox = font.getbbox(name)
-                            txt_w = bbox[2] - bbox[0]
-                            txt_h = bbox[3] - bbox[1]
-                        else:
-                            txt_w, txt_h = draw.textsize(name, font=font)
-                        
-                        # Tính bù trừ ngược đảm bảo tọa độ không bao giờ bị âm hoặc y1 < y0
-                        bg_x1 = max(0, int(x1))
-                        bg_y1 = max(0, int(y1) - int(txt_h) - 20)
-                        bg_x2 = int(bg_x1 + txt_w + 20)
-                        bg_y2 = int(bg_y1 + txt_h + 20)
-                        
-                        draw.rectangle([(bg_x1, bg_y1), (bg_x2, bg_y2)], fill=(0, 0, 0))
+                            bbox = font.getbbox(name); tw = bbox[2]-bbox[0]; th = bbox[3]-bbox[1]
+                        else: tw, th = draw.textsize(name, font=font)
+                        bg_x1, bg_y1 = max(0, int(x1)), max(0, int(y1) - int(th) - 20)
+                        draw.rectangle([(bg_x1, bg_y1), (int(bg_x1 + tw + 20), int(bg_y1 + th + 20))], fill=(0, 0, 0))
                         draw.text((bg_x1 + 10, bg_y1 + 4), name, font=font, fill=color_pil)
-
                     frame_copy = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-                # Thu nhỏ ảnh để tiết kiệm băng thông
                 h, w = frame_copy.shape[:2]
-                sw = 640
-                sh = int(h * (sw / w))
+                sw = 640; sh = int(h * (sw / w))
                 small = cv2.resize(frame_copy, (sw, sh))
                 _, buffer = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 75])
                 img_b64 = base64.b64encode(buffer).decode("utf-8")
                 
                 url = f"{edge_client.server_url}/api/system/frame"
-                payload = {
-                    "image_b64": img_b64, 
-                    "camera_id": cam_id,
-                    "detections": dets or []
-                }
+                payload = {"image_b64": img_b64, "camera_id": cam_id, "detections": dets or []}
                 headers = {"X-API-Key": edge_client._headers()["X-API-Key"]}
-                
-                resp = requests.post(url, json=payload, headers=headers, timeout=10)
-                if resp.status_code != 200:
-                    logger.debug(f"📤 [{cam_id}] Upload frame fail: {resp.status_code}")
-                # else:
-                #     logger.debug(f"📤 [{cam_id}] Upload frame SUCCESS!")
-            except Exception as e:
-                logger.error(f"📤 [{cam_id}] Lỗi upload frame: {e}")
-            finally:
-                self._is_uploading = False
+                requests.post(url, json=payload, headers=headers, timeout=5)
+            except: pass
         
         threading.Thread(target=task, daemon=True).start()
 
@@ -405,33 +380,67 @@ class HeadlessProcessor:
 
                     # NẾU PHÁT HIỆN LỆNH MỚI TỪ SERVER
                     if new_cmd != self._current_command:
-                        self._current_command = new_cmd
-                        is_start = (new_cmd == "START")
-                        
-                        # In log thông báo trạng thái
-                        if is_start:
-                            logger.info("🟢 NHẬN LỆNH [START]: Đánh thức Camera, bắt đầu điểm danh!")
+                        if new_cmd == "RETRY_CAMERA" and actual_target:
+                            logger.warning(f"🔄 NHẬN LỆNH [RETRY]: Khởi động lại Camera {actual_target}")
+                            target_key = None
+                            for cid, worker in self._workers.items():
+                                if str(cid).upper() == str(actual_target).upper() or str(worker.source).upper() == str(actual_target).upper():
+                                    target_key = cid
+                                    worker.set_active(False)
+                                    worker._stop_event.set()
+                                    break
+                            
+                            if target_key:
+                                old_worker = self._workers[target_key]
+                                new_worker = CameraWorker(camera_id=target_key, source=old_worker.source)
+                                new_worker.set_active(True)
+                                new_worker.set_attendance_enabled(True)
+                                new_worker.set_previewing(True)
+                                self._workers[target_key] = new_worker
+                                new_worker.start()
+                                
+                            # Reset lệnh retry ngay để không lặp lại
+                            try: requests.post(f"{edge_client.server_url}/api/system/command", json={"command": "START"}, headers=edge_client._headers(), timeout=1)
+                            except: pass
                         else:
-                            logger.info("🔴 NHẬN LỆNH [STOP]: Tạm dừng điểm danh, giải phóng Camera.")
+                            self._current_command = new_cmd
+                            is_start = (new_cmd == "START")
+                            
+                            # In log thông báo trạng thái
+                            if is_start:
+                                logger.info("🟢 NHẬN LỆNH [START]: Đánh thức Camera, bắt đầu điểm danh!")
+                                face_engine.load_model()
+                            else:
+                                logger.info("🔴 NHẬN LỆNH [STOP]: Tạm dừng điểm danh, giải phóng Camera.")
+                                face_engine.unload_model()
 
-                        # Đẩy lệnh xuống điều khiển tất cả các luồng camera
-                        for worker in self._workers.values():
-                            worker.set_active(is_start)
-                            worker.set_attendance_enabled(is_start)
+                            # Đẩy lệnh xuống điều khiển tất cả các luồng camera
+                            for worker in self._workers.values():
+                                worker.set_active(is_start)
+                                worker.set_attendance_enabled(is_start)
 
-                    # Luôn cập nhật xem Server có đang muốn xem trước (Preview) camera nào không
+                    # Cập nhật xem Server có đang muốn xem trước (Preview) camera nào không
                     self._target_camera_view = actual_target
                     
-                    if actual_target and isinstance(actual_target, str) and actual_target.startswith("rtsp://"):
-                        source_exists = any(w.source == actual_target for w in self._workers.values())
-                        if actual_target not in self._workers and not source_exists:
-                            logger.info(f"✨ Khởi tạo on-the-fly Worker cho: {actual_target}")
-                            new_worker = CameraWorker(camera_id=actual_target, source=actual_target)
-                            is_sys_start = (self._current_command == "START")
-                            new_worker.set_active(True) # Luôn để True để đọc ảnh preview
-                            new_worker.set_attendance_enabled(is_sys_start) 
-                            self._workers[actual_target] = new_worker
-                            new_worker.start()
+                    # [NEW] Khởi tạo Worker cho TẤT CẢ các camera thuộc Server
+                    all_cams = cmd_data.get("all_cameras", [])
+                    
+                    # Đảm bảo target_camera cũng được khởi tạo (fallback nếu server ko gửi all_cameras)
+                    if actual_target and isinstance(actual_target, str):
+                        if actual_target not in all_cams:
+                            all_cams.append(actual_target)
+                            
+                    for cam_url in all_cams:
+                        if isinstance(cam_url, str):
+                            source_exists = any(w.source == cam_url for w in self._workers.values())
+                            if cam_url not in self._workers and not source_exists:
+                                logger.info(f"✨ Khởi tạo on-the-fly Worker cho Camera: {cam_url}")
+                                new_worker = CameraWorker(camera_id=cam_url, source=cam_url)
+                                is_sys_start = (self._current_command == "START")
+                                new_worker.set_active(is_sys_start) 
+                                new_worker.set_attendance_enabled(is_sys_start) 
+                                self._workers[cam_url] = new_worker
+                                new_worker.start()
 
                     for cid, worker in self._workers.items():
                         is_match = (cid.upper() == str(actual_target).upper() or str(actual_target).upper() == str(worker.source).upper())

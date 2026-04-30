@@ -305,9 +305,12 @@ class ReportsPage(QWidget):
             self._table_sessions.setRowHeight(i, 40)
             
             date_str = s.session_date.strftime("%d/%m/%Y") if s.session_date else "N/A"
+            c_code = getattr(s, "class_code", "N/A")
+            if c_code == "GLOBAL": c_code = "Toàn trường"
+            
             items = [
                 QTableWidgetItem(date_str),
-                QTableWidgetItem(getattr(s, "class_code", "N/A")),
+                QTableWidgetItem(c_code),
                 QTableWidgetItem(s.subject_name),
                 QTableWidgetItem(s.status)
             ]
@@ -363,7 +366,8 @@ class ReportsPage(QWidget):
             self.content_view.show()
             
             self._lbl_detail_title.setText(f"📚 {data.subject_name}")
-            self._lbl_detail_subtitle.setText(f"Lớp: {data.class_code} | Ngày: {data.session_date} | Thời gian: {data.start_time} - {data.end_time}")
+            c_code = "Toàn trường" if data.class_code == "GLOBAL" else data.class_code
+            self._lbl_detail_subtitle.setText(f"Lớp: {c_code} | Ngày: {data.session_date} | Thời gian: {data.start_time} - {data.end_time}")
             
             self._stat_total.set_value(str(data.total_students))
             self._stat_present.set_value(str(data.present_count))
@@ -404,7 +408,8 @@ class ReportsPage(QWidget):
         self._btn_pdf.setEnabled(True)
         
         if result.get("success"):
-            QMessageBox.information(self, "Thành công", f"Đã xuất báo cáo tại:\n{result.get('path') or result.get('excel')}")
+            file_path = result.get('excel') or result.get('pdf') or result.get('path')
+            QMessageBox.information(self, "Thành công", f"Đã xuất báo cáo tại:\n{file_path}")
         else:
             QMessageBox.warning(self, "Thất bại", f"Lỗi: {result.get('error')}")
 

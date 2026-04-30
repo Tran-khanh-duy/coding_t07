@@ -50,12 +50,33 @@ class EdgeClient:
         self.camera_id = edge_config.camera_id
 
         # Embedding cache cục bộ
-        self._cache = EmbeddingCache()
+        # Global cache cũ (nếu không có camera_id)
+        self._cache: EmbeddingCache = EmbeddingCache()
+        
+        # [NEW] Multi-camera caches
+        self._multi_caches = {}  # { camera_id: EmbeddingCache }
+        self._multi_cache_times = {} # { camera_id: float (timestamp) }
+        
         self._cache_lock = threading.Lock()
 
         # Trạng thái kết nối
         self._server_online = False
         self._last_embed_pull = 0.0
+        
+        # Setup Session với Retry logic
+        from requests.adapters import HTTPAdapter
+        from urllib3.util.retry import Retry
+        self._session = requests.Session()
+        retries = Retry(
+            total=3, 
+            backoff_factor=0.5, 
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
+
         self._active_status_cache = {} # Cache trạng thái từ HeadlessProcessor
 
         # Offline queue (SQLite)
@@ -118,7 +139,7 @@ class EdgeClient:
     def check_server(self) -> bool:
         """Kiểm tra server còn online không."""
         try:
-            resp = requests.get(
+            resp = self._session.get(
                 f"{self.server_url}/api/health",
                 timeout=3,
             )
@@ -160,15 +181,24 @@ class EdgeClient:
 
             # [FIX] Gửi cả Tên và Source của Camera
             for cam in edge_config.camera_list:
+                is_active = self._active_status_cache.get(cam["id"], False)
+                if not is_active:
+                    is_active = self._active_status_cache.get(cam["source"], False)
+                    
                 status_map[cam["id"]] = {
                     "name": cam["name"],
-                    "source": cam["source"]
+                    "source": cam["source"],
+                    "is_active": is_active
                 }
 
             # Bổ sung các camera đang hoạt động khác nếu có
             for cam_id, is_active in self._active_status_cache.items():
                 if is_active and cam_id not in status_map:
-                    status_map[cam_id] = True # Fallback nếu không có source cụ thể
+                    status_map[cam_id] = {
+                        "name": f"Auto {cam_id}",
+                        "source": cam_id,
+                        "is_active": True
+                    }
 
             payload = {
                 "device_name": edge_config.device_name,
@@ -177,7 +207,7 @@ class EdgeClient:
                 "timestamp": datetime.now().isoformat()
             }
             
-            requests.post(
+            self._session.post(
                 f"{self.server_url}/api/system/edge_status",
                 json=payload,
                 headers=self._headers(),
@@ -193,15 +223,17 @@ class EdgeClient:
 
     # ─── Pull Embeddings ──────────────────────
 
-    def pull_embeddings(self) -> bool:
+    def pull_embeddings(self, target_camera_id: str = None) -> bool:
         """
         Kéo toàn bộ embedding vectors từ Server về RAM.
-        Gọi khi khởi động và định kỳ mỗi N phút.
+        Nếu truyền target_camera_id, sẽ lưu vào cache riêng của camera đó.
         """
+        cam_id = target_camera_id or self.camera_id
         try:
-            logger.info("📥 Đang tải embeddings từ Server...")
-            resp = requests.get(
+            logger.info(f"📥 Đang tải embeddings từ Server cho camera_id={cam_id}...")
+            resp = self._session.get(
                 f"{self.server_url}/api/embeddings",
+                params={"camera_id": cam_id},
                 headers=self._headers(),
                 timeout=30,
             )
@@ -212,9 +244,13 @@ class EdgeClient:
 
             data = resp.json()
             if data.get("count", 0) == 0:
-                logger.warning("Server chưa có embedding nào!")
+                logger.warning(f"Server chưa có embedding nào cho {cam_id}!")
                 with self._cache_lock:
-                    self._cache = EmbeddingCache()
+                    if target_camera_id:
+                        self._multi_caches[target_camera_id] = EmbeddingCache()
+                        self._multi_cache_times[target_camera_id] = time.time()
+                    else:
+                        self._cache = EmbeddingCache()
                 return True
 
             # Parse embeddings
@@ -241,11 +277,15 @@ class EdgeClient:
                 new_cache.embeddings = mat / np.maximum(norms, 1e-8)
 
             with self._cache_lock:
-                self._cache = new_cache
-                self._last_embed_pull = time.time()
+                if target_camera_id:
+                    self._multi_caches[target_camera_id] = new_cache
+                    self._multi_cache_times[target_camera_id] = time.time()
+                else:
+                    self._cache = new_cache
+                    self._last_embed_pull = time.time()
 
             self._server_online = True
-            logger.success(f"✅ Đã tải {new_cache.size} khuôn mặt từ Server vào RAM")
+            logger.success(f"✅ Đã tải {new_cache.size} khuôn mặt (Camera {cam_id}) từ Server vào RAM")
             return True
 
         except requests.ConnectionError:
@@ -257,14 +297,21 @@ class EdgeClient:
             self._server_online = False
             return False
 
-    def get_cache(self) -> EmbeddingCache:
-        """Lấy cache hiện tại (thread-safe)."""
+    def get_cache(self, camera_id: str = None) -> EmbeddingCache:
+        """Lấy cache hiện tại (thread-safe). Lấy cache riêng của camera nếu có."""
         with self._cache_lock:
+            if camera_id and camera_id in self._multi_caches:
+                return self._multi_caches[camera_id]
             return self._cache
 
-    def should_refresh_embeddings(self) -> bool:
+    def should_refresh_embeddings(self, camera_id: str = None) -> bool:
         """Kiểm tra đã đến lúc refresh embeddings chưa."""
-        elapsed_min = (time.time() - self._last_embed_pull) / 60
+        if camera_id and camera_id in self._multi_cache_times:
+            last_pull = self._multi_cache_times[camera_id]
+        else:
+            last_pull = self._last_embed_pull
+            
+        elapsed_min = (time.time() - last_pull) / 60
         return elapsed_min >= edge_config.embedding_refresh_min
 
     # ─── Push Attendance ──────────────────────
@@ -272,6 +319,7 @@ class EdgeClient:
     def send_attendance(
         self,
         embedding: np.ndarray,
+        camera_id: str = None,
         liveness_score: float = 1.0,
         liveness_checked: bool = False,
     ) -> dict:
@@ -280,7 +328,7 @@ class EdgeClient:
         Nếu mất mạng → lưu offline.
         """
         payload = {
-            "camera_id": self.camera_id,
+            "camera_id": camera_id or self.camera_id,
             "timestamp": datetime.now().isoformat(),
             "embedding": embedding.tolist(),
             "liveness_score": liveness_score,
@@ -288,7 +336,7 @@ class EdgeClient:
         }
 
         try:
-            resp = requests.post(
+            resp = self._session.post(
                 f"{self.server_url}/api/attendance",
                 json=payload,
                 headers=self._headers(),
@@ -337,17 +385,19 @@ class EdgeClient:
 
     # ─── Cooldown ─────────────────────────────
 
-    def check_cooldown(self, student_id: int) -> float:
+    def check_cooldown(self, student_id: int, camera_id: str) -> float:
         """Trả về thời gian cooldown còn lại (giây). 0 = hết cooldown."""
         with self._cooldown_lock:
-            last = self._cooldown_map.get(student_id, 0)
+            key = f"{student_id}_{camera_id}"
+            last = self._cooldown_map.get(key, 0)
             elapsed = time.time() - last
             remaining = max(0.0, edge_config.attendance_cooldown - elapsed)
             return remaining
 
-    def set_cooldown(self, student_id: int):
+    def set_cooldown(self, student_id: int, camera_id: str):
         with self._cooldown_lock:
-            self._cooldown_map[student_id] = time.time()
+            key = f"{student_id}_{camera_id}"
+            self._cooldown_map[key] = time.time()
 
     # ─── Background Sync ─────────────────────
 
@@ -370,9 +420,16 @@ class EdgeClient:
                         self._last_version_check = now
                         self._check_embedding_version()
 
-                # 2. Refresh embeddings định kỳ dự phòng (giữ lại dùng kịch bản khởi động lần đầu)
-                if self._server_online and self.should_refresh_embeddings():
-                    self.pull_embeddings()
+                # 2. Refresh embeddings định kỳ dự phòng
+                if self._server_online:
+                    # Refresh global cache
+                    if self.should_refresh_embeddings():
+                        self.pull_embeddings()
+                        
+                    # Refresh multi-caches cho các camera đang kết nối
+                    for cam_id in list(self._multi_caches.keys()):
+                        if self.should_refresh_embeddings(cam_id):
+                            self.pull_embeddings(cam_id)
 
             except Exception as e:
                 logger.debug(f"Sync loop error: {e}")
@@ -389,7 +446,7 @@ class EdgeClient:
         Nếu có phân bản mới → pull lại toàn bộ embeddings — không cần restart Mini PC.
         """
         try:
-            resp = requests.get(
+            resp = self._session.get(
                 f"{self.server_url}/api/embeddings/version",
                 headers=self._headers(),
                 timeout=2,
@@ -400,6 +457,8 @@ class EdgeClient:
                 if server_version != self._known_embedding_version:
                     logger.info(f"📥 Phát hiện embedding_version mới: {self._known_embedding_version} → {server_version} — Đang pull...") 
                     self.pull_embeddings()
+                    for cam_id in list(self._multi_caches.keys()):
+                        self.pull_embeddings(cam_id)
                     self._known_embedding_version = server_version
         except Exception as e:
             logger.debug(f"_check_embedding_version error: {e}")

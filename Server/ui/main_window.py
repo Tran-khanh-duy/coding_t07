@@ -126,13 +126,9 @@ class InitWorker(QThread):
             logger.error(f"Cache Load Error: {e}")
             self.progress.emit("Lỗi nạp dữ liệu RAM ❌", 70)
 
-        # 3. Load Model AI
-        self.progress.emit("Khởi động AI Engine (GPU)...", 80)
-        try:
-            from services.face_engine import face_engine
-            if face_engine.load_model():
-                status["model"] = True
-        except Exception: pass
+        # 3. Skip Load Model AI at startup (load on demand)
+        self.progress.emit("Hệ thống đã sẵn sàng!", 90)
+        status["model"] = False # Sẽ được load khi cần
 
         self.init_status.emit(status)
         self.progress.emit("Hệ thống đã sẵn sàng!", 100)
@@ -189,6 +185,7 @@ class MainWindow(QMainWindow):
 
         # ── Signals ──
         self._pages[Sidebar.PAGE_STUDENTS].go_to_enroll.connect(self._navigate_to_enroll)
+        self._pages[Sidebar.PAGE_DASHBOARD].go_to_live_view.connect(self._navigate_to_live_view)
 
         # 3. Loading Overlay (Không dùng import nữa, gọi trực tiếp class ở trên)
         self._loading = LoadingOverlay(central)
@@ -213,6 +210,14 @@ class MainWindow(QMainWindow):
             enroll_page.load_student(student_id)
         else:
             enroll_page._reset_form()
+
+    def _navigate_to_live_view(self, cam_id: str):
+        # Chọn mục Điểm danh live
+        self._sidebar._on_nav_click(Sidebar.PAGE_ATTENDANCE)
+        # Báo cho trang Attendance chọn đúng camera (nếu trang đó có hàm này)
+        attendance_page = self._pages[Sidebar.PAGE_ATTENDANCE]
+        if hasattr(attendance_page, 'select_camera_by_id'):
+            attendance_page.select_camera_by_id(cam_id)
 
     def _start_init(self):
         self._worker = InitWorker()

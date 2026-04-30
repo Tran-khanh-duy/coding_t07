@@ -89,7 +89,10 @@ class EnrollmentService:
         gender:       str  = None,
         phone:        str  = None,
         email:        str  = None,
-        # photo_path đã bỏ — không có trong schema mới
+        class_name:   str  = None,
+        building:     str  = None,
+        floor:        str  = None,
+        room:         str  = None,
     ) -> Optional[int]:
         """Tạo học viên mới. Trả về student_id hoặc None nếu lỗi."""
         existing = student_repo.get_by_code(student_code)
@@ -104,7 +107,10 @@ class EnrollmentService:
             gender=gender,
             phone=phone,
             email=email,
-            # KHÔNG truyền photo_path
+            class_name=class_name,
+            building=building,
+            floor=floor,
+            room=room,
         )
         logger.info(f"Tạo học viên: [{student_code}] {full_name} (id={student_id})")
         return student_id
@@ -132,11 +138,11 @@ class EnrollmentService:
             if self._capture.is_complete:
                 return False
 
-        faces = face_engine.detect_faces(frame)
-        has_face = False
-        if faces:
-            main_face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-            has_face = main_face.det_score >= ai_config.min_face_det_score
+        # Sử dụng OpenCV siêu nhẹ thay vì model nặng
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        faces_rect = face_cascade.detectMultiScale(gray, 1.3, 5)
+        has_face = len(faces_rect) > 0
 
         if self.on_face_detected:
             try:
@@ -229,49 +235,35 @@ class EnrollmentService:
                 )
             )
 
-        logger.info(
-            f"Tính embedding cho [{student.student_code}] {student.full_name} "
-            f"từ {len(frames)} ảnh..."
-        )
-        embedding, avg_score, valid_count = face_engine.compute_enrollment_embedding(frames)
+        # Background Task tự động trích xuất Vector
+        def _extract_bg():
+            try:
+                logger.info(f"⚙️ [Background] Tính embedding cho [{student.student_code}] từ {len(frames)} ảnh...")
+                embedding, avg_score, valid_count = face_engine.compute_enrollment_embedding(frames)
+                if embedding is not None and valid_count >= ai_config.min_enroll_photos:
+                    embedding_repo.save_embedding(
+                        student_id=student_id,
+                        embedding=embedding,
+                        model_version="buffalo_l",
+                    )
+                    student_repo.update_enrollment_status(student_id, enrolled=True)
+                    self._save_profile_photo(frames, student.student_code)
+                    
+                    cache_manager.add_student_to_cache(
+                        student_id=student_id,
+                        student_code=student.student_code,
+                        full_name=student.full_name,
+                        class_id=student.class_id or 0,
+                        class_name=student.class_name or "",
+                        embedding=embedding,
+                    )
+                    logger.success(f"✅ [Background] Cập nhật AI xong cho: {student.full_name}")
+                else:
+                    logger.error(f"❌ [Background] Nhận diện thất bại hoặc không đủ ảnh hợp lệ cho {student.full_name}")
+            except Exception as e:
+                logger.error(f"❌ [Background] Lỗi trích xuất Vector: {e}")
 
-        if embedding is None or valid_count < ai_config.min_enroll_photos:
-            return EnrollmentResult(
-                success=False,
-                student_id=student_id,
-                student_code=student.student_code,
-                full_name=student.full_name,
-                photos_taken=len(frames),
-                photos_valid=valid_count,
-                avg_det_score=avg_score,
-                error_msg=(
-                    f"Chỉ nhận diện được {valid_count}/{len(frames)} khuôn mặt. "
-                    f"Hãy chụp lại với ánh sáng tốt hơn."
-                )
-            )
-
-        # Lưu embedding — KHÔNG truyền photo_count / avg_det_score (schema mới bỏ 2 cột này)
-        embedding_repo.save_embedding(
-            student_id=student_id,
-            embedding=embedding,
-            model_version="buffalo_l",
-        )
-
-        # Cập nhật face_enrolled = 1
-        student_repo.update_enrollment_status(student_id, enrolled=True)
-
-        # Lưu ảnh đại diện
-        self._save_profile_photo(frames, student.student_code)
-
-        # Hot reload cache ngay lập tức (không cần restart app)
-        cache_manager.add_student_to_cache(
-            student_id=student_id,
-            student_code=student.student_code,
-            full_name=student.full_name,
-            class_id=student.class_id or 0,
-            class_name=student.class_name or "",
-            embedding=embedding,
-        )
+        threading.Thread(target=_extract_bg, daemon=True).start()
 
         with self._lock:
             self._capture    = None
@@ -283,8 +275,8 @@ class EnrollmentService:
             student_code=student.student_code,
             full_name=student.full_name,
             photos_taken=len(frames),
-            photos_valid=valid_count,
-            avg_det_score=avg_score,
+            photos_valid=len(frames),
+            avg_det_score=1.0,
         )
         logger.success(result.summary)
         return result

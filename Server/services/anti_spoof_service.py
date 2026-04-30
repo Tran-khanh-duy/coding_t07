@@ -100,7 +100,13 @@ class AntiSpoofService:
         
         # Cache các model để tránh load lại
         self.models_cache = {}
+        self._models_loaded = False
+
+    def load_models(self):
+        if self._models_loaded:
+            return
         self._load_all_models()
+        self._models_loaded = True
 
     def _load_all_models(self):
         if not TORCH_AVAILABLE or not os.path.exists(self.model_dir):
@@ -153,7 +159,13 @@ class AntiSpoofService:
         """
         Kiểm tra xem khuôn mặt trong bbox có phải là người thật hay không.
         """
-        if not TORCH_AVAILABLE or not self.models_cache:
+        if not TORCH_AVAILABLE:
+            return True, 1.0
+            
+        if not self._models_loaded:
+            self.load_models()
+            
+        if not self.models_cache:
             return True, 1.0
             
         try:

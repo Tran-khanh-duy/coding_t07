@@ -35,10 +35,14 @@ class Student:
     phone:         Optional[str]      = None
     email:         Optional[str]      = None
     class_id:      Optional[int]      = None
+    class_name:    Optional[str]      = None   # Bây giờ là trường thật trong DB theo yêu cầu
+    building:      Optional[str]      = None
+    floor:         Optional[str]      = None
+    room:          Optional[str]      = None
     face_enrolled: bool               = False
     created_at:    Optional[datetime] = None
     # Join field — không có trong bảng Students
-    class_name:    Optional[str]      = None
+    # (Đã di chuyển class_name lên trên)
 
     def __post_init__(self):
         # pyodbc trả về int(0/1) từ BIT → cast về bool
@@ -80,6 +84,7 @@ class Camera:
     rtsp_url:      Optional[str]      = None
     ip_address:    Optional[str]      = None
     resolution:    str                = "1280x720"
+    area_id:       Optional[str]      = None
     is_active:     bool               = True
 
     def __post_init__(self):

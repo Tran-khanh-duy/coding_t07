@@ -7,9 +7,10 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QFrame, QGridLayout, QScrollArea, QProgressBar
 )
-from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPixmap, QPainter, QPen
 from datetime import datetime
+import requests
 
 import sys
 from pathlib import Path
@@ -155,12 +156,16 @@ class StatusTile(QFrame):
 
 class CameraPill(QFrame):
     """Hiển thị trạng thái của từng Camera."""
+    clicked = pyqtSignal(str)
+    
     def __init__(self, cam_id, name):
         super().__init__()
-        self.cam_id = cam_id
+        self.cam_id = str(cam_id)
         self.setStyleSheet("""
             QFrame { background: #F8FAFC; border-radius: 8px; border: 1px solid #E2E8F0; }
+            QFrame:hover { background: #F1F5F9; border: 1px solid #CBD5E1; }
         """)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedHeight(50)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 0, 12, 0)
@@ -187,8 +192,14 @@ class CameraPill(QFrame):
             self.status_lbl.setText("Offline")
             self.status_lbl.setStyleSheet("font-size: 12px; font-weight: 800; color: #EF4444; border: none; background: transparent;")
 
+    def mousePressEvent(self, event):
+        self.clicked.emit(self.cam_id)
+        super().mousePressEvent(event)
+
 
 class DashboardPage(QWidget):
+    go_to_live_view = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.gpu_name = get_gpu_name()
@@ -338,11 +349,12 @@ class DashboardPage(QWidget):
         cam_layout.addSpacing(10)
         
         self.cam_pills = {}
-        # Render up to 5 cameras
+        # Render up to 5 cameras (có thể lấy từ db sau này)
         for cam in CAMERAS[:5]:
-            pill = CameraPill(cam["id"], f"{cam['name']} (Tầng {cam.get('floor', '?')})")
+            pill = CameraPill(cam["source"], f"{cam['name']} (Tầng {cam.get('floor', '?')})")
+            pill.clicked.connect(self._on_camera_clicked)
             cam_layout.addWidget(pill)
-            self.cam_pills[cam["id"]] = pill
+            self.cam_pills[str(cam["source"])] = pill
             
         cam_layout.addStretch()
         mid_row.addWidget(cam_panel, 4)
@@ -394,11 +406,42 @@ class DashboardPage(QWidget):
         # SYS
         self.health_sys.set_status("Running", True)
         
-        # Cameras
-        for cam_id, pill in self.cam_pills.items():
-            status = camera_manager.get_status(cam_id)
-            is_online = (status == CameraStatus.CONNECTED)
-            pill.update_status(is_online)
+        # Cameras & Stats via API
+        try:
+            resp = requests.get("http://127.0.0.1:9696/api/dashboard/stats", headers={"X-API-Key": "faceattend_secret_2026"}, timeout=1)
+            if resp.status_code == 200:
+                data = resp.json()
+                self.kpi_total.set_value(str(data.get("student_count", 0)))
+                # Cập nhật số camera online/offline thay vì số lượng học viên vắng mặt
+                self.kpi_present.val_lbl.setText(str(data.get("camera_online", 0)))
+                self.kpi_absent.val_lbl.setText(str(data.get("camera_offline", 0)))
+                
+                # Sửa lại tiêu đề cho đúng
+                self.kpi_present.findChildren(QLabel)[0].setText("CAMERA ONLINE")
+                self.kpi_absent.findChildren(QLabel)[0].setText("CAMERA OFFLINE")
+        except:
+            pass
+
+        # Call Edge Status to update pills
+        try:
+            resp = requests.get("http://127.0.0.1:9696/api/system/edge_status", timeout=1)
+            if resp.status_code == 200:
+                edge_data = resp.json()
+                active_cams = set()
+                for dev in edge_data.values():
+                    cams = dev.get("camera_status", {})
+                    for cid, cinfo in cams.items():
+                        if cinfo.get("is_active"):
+                            active_cams.add(str(cid))
+                            
+                for cam_id, pill in self.cam_pills.items():
+                    # Check against active_cams
+                    pill.update_status(cam_id in active_cams or str(cam_id) in active_cams)
+        except:
+            pass
+
+    def _on_camera_clicked(self, cam_id: str):
+        self.go_to_live_view.emit(cam_id)
 
     def update_system_status(self, key: str, ok: bool, text: str = "", custom_color: str = None):
         """Hỗ trợ tương thích ngược cho main_window.py gọi"""

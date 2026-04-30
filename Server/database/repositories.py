@@ -70,8 +70,8 @@ class StudentRepository:
         SELECT s.student_id, s.student_code, s.full_name,
                s.gender, s.date_of_birth,
                s.phone, s.email, s.class_id,
-               s.face_enrolled, s.created_at,
-               c.class_name
+               ISNULL(s.class_name, c.class_name), s.building, s.floor, s.room,
+               s.face_enrolled, s.created_at
         FROM Students s
         LEFT JOIN Classes c ON c.class_id = s.class_id
     """
@@ -97,13 +97,15 @@ class StudentRepository:
 
     def create(self, student_code: str, full_name: str,
                class_id: int = None, gender: str = None,
-               phone: str = None, email: str = None) -> int:
+               phone: str = None, email: str = None,
+               class_name: str = None, building: str = None,
+               floor: str = None, room: str = None) -> int:
         rows = get_db().execute(
             """
-            INSERT INTO Students (student_code, full_name, gender, class_id, phone, email)
-            OUTPUT INSERTED.student_id VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO Students (student_code, full_name, gender, class_id, phone, email, class_name, building, floor, room)
+            OUTPUT INSERTED.student_id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (student_code, full_name, gender, class_id, phone, email),
+            (student_code, full_name, gender, class_id, phone, email, class_name, building, floor, room),
             commit=True,
         )
         sid = rows[0][0] if rows else -1
@@ -112,7 +114,7 @@ class StudentRepository:
 
     def update(self, student_id: int, **kwargs) -> bool:
         allowed = {"student_code", "full_name", "gender", "date_of_birth",
-                   "phone", "email", "class_id"}
+                   "phone", "email", "class_id", "class_name", "building", "floor", "room"}
         cols = {k: v for k, v in kwargs.items() if k in allowed}
         if not cols:
             return False
@@ -142,6 +144,38 @@ class StudentRepository:
         """
         rows = get_db().execute(sql, (kw, kw))
         return [Student(*r) for r in rows]
+
+    def get_student_count_by_camera(self, camera_source: str) -> int:
+        db = get_db()
+        # Tìm area_id của camera
+        rows = db.execute(
+            "SELECT area_id FROM Cameras WHERE camera_name = ? OR CAST(camera_id AS VARCHAR) = ? OR rtsp_url = ?",
+            (camera_source, camera_source, camera_source)
+        )
+        if rows and rows[0][0]:
+            area_id = rows[0][0]
+            parts = area_id.split('_')
+            bld = parts[0].strip() if len(parts) > 0 else None
+            flr = parts[1].strip() if len(parts) > 1 else None
+            
+            query = "SELECT COUNT(*) FROM Students WHERE 1=1"
+            params = []
+            if bld:
+                query += " AND building = ?"
+                params.append(bld)
+            if flr:
+                query += " AND floor = ?"
+                params.append(flr)
+            
+            try:
+                count_rows = db.execute(query, tuple(params))
+                return count_rows[0][0] if count_rows else 0
+            except Exception as e:
+                logger.error(f"Lỗi đếm số lượng: {e}")
+                
+        # Nếu camera không có phân khu, hoặc lỗi, lấy toàn bộ
+        total_rows = db.execute("SELECT COUNT(*) FROM Students")
+        return total_rows[0][0] if total_rows else 0
 
     def get_count_by_class(self, class_id: int) -> int:
         rows = get_db().execute(
@@ -281,7 +315,7 @@ class FaceEmbeddingRepository:
 class CameraRepository:
     _SQL = """
         SELECT camera_id, camera_name, location_desc,
-               rtsp_url, ip_address, resolution, is_active
+               rtsp_url, ip_address, resolution, area_id, is_active
         FROM Cameras
     """
 
@@ -298,19 +332,19 @@ class CameraRepository:
 
     def create(self, camera_name: str, location_desc: str = None,
                rtsp_url: str = None, ip_address: str = None,
-               resolution: str = "1280x720") -> int:
+               resolution: str = "1280x720", area_id: str = None) -> int:
         rows = get_db().execute(
             """
-            INSERT INTO Cameras (camera_name, location_desc, rtsp_url, ip_address, resolution)
-            OUTPUT INSERTED.camera_id VALUES (?, ?, ?, ?, ?)
+            INSERT INTO Cameras (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id)
+            OUTPUT INSERTED.camera_id VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (camera_name, location_desc, rtsp_url, ip_address, resolution),
+            (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id),
             commit=True,
         )
         return rows[0][0] if rows else -1
 
     def update(self, camera_id: int, **kwargs) -> bool:
-        allowed = {"camera_name", "location_desc", "rtsp_url", "ip_address", "resolution", "is_active"}
+        allowed = {"camera_name", "location_desc", "rtsp_url", "ip_address", "resolution", "area_id", "is_active"}
         cols = {k: v for k, v in kwargs.items() if k in allowed}
         if not cols: return False
         
@@ -486,12 +520,36 @@ class AttendanceRecordRepository:
                           recognition_score: float,
                           snapshot_path: str = None,
                           camera_id: int = None) -> bool:
-        """SP nhận đúng 3 params: @session_id, @student_id, @score."""
+        """Ghi nhận điểm danh. Nếu học viên chưa có trong phiên, tự thêm trước."""
         try:
-            get_db().call_procedure(
-                "sp_RecordAttendance",
-                (session_id, student_id, recognition_score)
+            from datetime import datetime
+            now = datetime.now()
+
+            # Đảm bảo học viên đã có dòng trong phiên (tự chèn ABSENT nếu chưa có)
+            existing = get_db().execute(
+                "SELECT 1 FROM AttendanceRecords WHERE session_id=? AND student_id=?",
+                (session_id, student_id)
             )
+            if not existing:
+                get_db().execute(
+                    "INSERT INTO AttendanceRecords (session_id, student_id, status) VALUES (?, ?, 'ABSENT')",
+                    (session_id, student_id), commit=True,
+                )
+
+            # Cập nhật thành PRESENT
+            rid = self.upsert(
+                session_id=session_id,
+                student_id=student_id,
+                status="PRESENT",
+                check_in_time=now,
+                recognition_score=recognition_score,
+            )
+
+            if rid < 0:
+                logger.error(f"record_attendance: upsert trả về -1 (s={session_id} u={student_id})")
+                return False
+
+            # Cập nhật present_count trong session
             get_db().execute(
                 """
                 UPDATE AttendanceSessions
@@ -502,7 +560,7 @@ class AttendanceRecordRepository:
                 """,
                 (session_id, session_id), commit=True,
             )
-            logger.debug(f"Attendance: s={session_id} u={student_id} score={recognition_score:.3f}")
+            logger.success(f"✅ record_attendance OK: s={session_id} u={student_id} score={recognition_score:.3f}")
             return True
         except Exception as e:
             logger.error(f"record_attendance error: {e}")
@@ -538,12 +596,13 @@ class AttendanceRecordRepository:
             """
             SELECT s.student_code, s.full_name, c.class_name,
                    ar.status, ar.check_in_time, ar.recognition_score,
-                   ar.snapshot_path, s.gender, ar.camera_id, s.student_id
+                   ar.snapshot_path, s.gender, ar.camera_id, s.student_id,
+                   s.building, s.room
             FROM AttendanceRecords ar
             INNER JOIN Students s ON s.student_id = ar.student_id
             LEFT  JOIN Classes  c ON c.class_id   = s.class_id
             WHERE ar.session_id = ?
-            ORDER BY ar.status DESC, ar.check_in_time
+            ORDER BY c.class_name, ar.status DESC, ar.check_in_time
             """,
             (session_id,)
         )
@@ -554,7 +613,7 @@ class AttendanceRecordRepository:
             result.append({
                 "student_code":      r[0] or "",
                 "full_name":         r[1] or "",
-                "class_name":        r[2] or "",
+                "class_name":        r[2] or "Khác",
                 "status":            r[3] or "ABSENT",
                 "check_in_time":     time_str,
                 "recognition_score": float(r[5] or 0),
@@ -562,6 +621,8 @@ class AttendanceRecordRepository:
                 "gender":            r[7] or "",
                 "camera_id":         r[8] or 1,
                 "student_id":        r[9] or 0,
+                "building":          r[10] or "",
+                "room":              r[11] or "",
             })
         return result
 
@@ -575,15 +636,17 @@ class AttendanceRecordRepository:
     def get_present_list(self, session_id: int) -> list:
         rows = get_db().execute(
             """
-            SELECT s.student_code, s.full_name, ar.check_in_time, ar.recognition_score
+            SELECT s.student_code, s.full_name, ar.check_in_time, ar.recognition_score,
+                   ISNULL(c.class_code, ISNULL(s.class_name, '')) AS class_code
             FROM AttendanceRecords ar
             INNER JOIN Students s ON s.student_id = ar.student_id
+            LEFT JOIN Classes c ON c.class_id = s.class_id
             WHERE ar.session_id = ? AND ar.status = 'PRESENT'
             ORDER BY ar.check_in_time
             """,
             (session_id,)
         )
-        return [{"code": r[0], "name": r[1], "time": r[2], "score": r[3]} for r in rows]
+        return [{"code": r[0], "name": r[1], "time": r[2], "score": float(r[3] or 0), "class_code": r[4]} for r in rows]
 
 
 # ─────────────────────────────────────────────

@@ -72,68 +72,8 @@ class CaptureWorker(QThread):
         cap.set(cv2.CAP_PROP_FPS, camera_config.fps)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-        from services.face_engine import face_engine
-        
-        # Tách AI sang thread khác để không block camera
-        import threading
-        class UIDetectThread(threading.Thread):
-            def __init__(self, worker):
-                super().__init__(daemon=True)
-                self.worker = worker
-                self.lock = threading.Lock()
-                self.latest_frame = None
-                self._running = True
-                self.latest_faces = []
-                self.has_face = False
-                
-            def update_frame(self, frame):
-                with self.lock:
-                    self.latest_frame = frame.copy()
-            
-            def get_latest(self):
-                with self.lock:
-                    return self.has_face, self.latest_faces
-                    
-            def stop(self):
-                self._running = False
-                
-            def run(self):
-                while self._running:
-                    with self.lock:
-                        frame = self.latest_frame
-                        self.latest_frame = None
-                        
-                    if frame is None:
-                        time.sleep(0.01)
-                        continue
-                        
-                    has_face = False
-                    faces = []
-                    if face_engine.is_ready:
-                        try:
-                            detected_faces = face_engine.detect_faces(frame)
-                            if detected_faces:
-                                # Chọn khuôn mặt lớn nhất (gần camera nhất) để có embedding sâu sắc và tinh khiết nhất
-                                main_face = max(detected_faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-                                
-                                # Tính diện tích khuôn mặt trong khung
-                                face_area = (main_face.bbox[2] - main_face.bbox[0]) * (main_face.bbox[3] - main_face.bbox[1])
-                                
-                                # THRESHOLD CAO NHẤT: Chỉ bắt nhịp khi mặt đủ rõ (>80%) và đủ lớn/gần
-                                if main_face.det_score > 0.70 and face_area > 15000:
-                                    faces = [main_face]
-                                    has_face = True
-                        except Exception:
-                            pass
-                    
-                    with self.lock:
-                        self.latest_faces = faces
-                        self.has_face = has_face
-                        
-                    self.worker.face_detected.emit(has_face)
-
-        ai_thread = UIDetectThread(self)
-        ai_thread.start()
+        # Thay thế hoàn toàn model Anti-Spoofing / Buffalo bằng OpenCV siêu nhẹ
+        face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         
         frame_skip = 0
 
@@ -144,11 +84,14 @@ class CaptureWorker(QThread):
                 continue
 
             frame_skip += 1
+            has_face = False
+            faces = []
             if frame_skip >= camera_config.process_every_n_frames:
                 frame_skip = 0
-                ai_thread.update_frame(frame)
-                
-            has_face, faces = ai_thread.get_latest()
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = face_cascade.detectMultiScale(gray, scaleFactor=1.3, minNeighbors=5, minSize=(100, 100))
+                has_face = len(faces) > 0
+                self.face_detected.emit(has_face)
 
             # Lưu frame GỐC cho embedding
             # Lưu frame GỐC cho embedding tốc độ cao
@@ -169,16 +112,13 @@ class CaptureWorker(QThread):
             w = display.shape[1]
 
             # Vẽ bounding box trên frame đã flip
-            if face_engine.is_ready and has_face:
+            if has_face:
                 try:
-                    for f in faces:
-                        x1, y1, x2, y2 = f.bbox
+                    for (x, y, fw, fh) in faces:
+                        x1, y1, x2, y2 = x, y, x + fw, y + fh
                         x1m, x2m = w - x2, w - x1
                         color = (0, 220, 80)
                         cv2.rectangle(display, (int(x1m), int(y1)), (int(x2m), int(y2)), color, 2)
-                        cv2.putText(display, f"{f.det_score:.2f}",
-                                    (int(x1m), int(y1) - 8),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
                 except Exception:
                     pass
 
@@ -193,8 +133,6 @@ class CaptureWorker(QThread):
 
             self.frame_ready.emit(display)
 
-        ai_thread.stop()
-        ai_thread.join(timeout=1.0)
         cap.release()
 
 
@@ -342,7 +280,7 @@ class EnrollPage(QWidget):
 
         grid = QGridLayout()
         grid.setSpacing(15)
-        grid.setVerticalSpacing(25)
+        grid.setVerticalSpacing(15)
         
         def create_label(text: str):
             lbl = QLabel(text)
@@ -360,23 +298,64 @@ class EnrollPage(QWidget):
         grid.addWidget(self._inp_code, 1, 0)
         grid.addWidget(self._inp_name, 1, 1)
 
-        grid.addWidget(create_label("Lớp học *"), 2, 0)
-        grid.addWidget(create_label("Giới tính"), 2, 1)
+        # ── Cascading Data Mapping ──
+        self._class_mapping = {
+            "KTX E1": { "Tầng 1": [], "Tầng 2": [], "Tầng 3": [], "Tầng 4": [], "Tầng 5": [] },
+            "KTX E2": { "Tầng 1": [], "Tầng 2": [], "Tầng 3": [], "Tầng 4": [], "Tầng 5": [] },
+            "KTX E3": {
+                "Tầng 1": ["B3D13", "B4D13", "B5D13", "B6D13", "B3D14", "B4D14", "B5D14", "B6D14"],
+                "Tầng 2": ["VB2K3", "B1-VB2K4", "B2-VB2K4", "B3-VB2K4", "VB2C1", "B2D12", "B3D12", "B4D12", "B5D12", "B1-LT8", "B2-LT8"],
+                "Tầng 3": ["B3D15", "B4D15", "B5D15", "B6D15", "B7D15", "B8D15", "B9D15", "B10D15", "B11D15"],
+                "Tầng 4": [],
+                "Tầng 5": []
+            },
+            "KTX E4": {
+                "Tầng 1": ["B4D14", "B5D14", "B6D14"],
+                "Tầng 2": ["B1-LT8", "B2-LT8", "B3D14"],
+                "Tầng 3": ["B2D12", "B3D12", "B4D12", "B5D12"],
+                "Tầng 4": ["B3D13", "B4D13", "B5D13", "B6D13"],
+                "Tầng 5": ["VB2K3"]
+            },
+            "KTX E5": {
+                "Tầng 1": ["B1-VB2K4", "B2-VB2K4", "B3-VB2K4"],
+                "Tầng 2": ["VB2C1"],
+                "Tầng 3": ["B3D15", "B4D15", "B5D15", "B6D15", "B7D15", "B8D15"],
+                "Tầng 4": ["B9D15", "B10D15", "B11D15"]
+            },
+            "KTX E6": { "Tầng 1": [], "Tầng 2": [], "Tầng 3": [], "Tầng 4": [], "Tầng 5": [] }
+        }
+
+        grid.addWidget(create_label("Tòa nhà (Mini PC) *"), 2, 0)
+        grid.addWidget(create_label("Tầng *"), 2, 1)
+        self._cmb_building = QComboBox(); self._cmb_building.addItems(["-- Chọn Mini PC (Tòa) --", "KTX E1", "KTX E2", "KTX E3", "KTX E4", "KTX E5", "KTX E6"]); self._cmb_building.setStyleSheet(combo_style()); self._cmb_building.setFixedHeight(48)
+        self._cmb_floor = QComboBox(); self._cmb_floor.addItem("-- Tầng --"); self._cmb_floor.setStyleSheet(combo_style()); self._cmb_floor.setFixedHeight(48)
+        grid.addWidget(self._cmb_building, 3, 0)
+        grid.addWidget(self._cmb_floor, 3, 1)
+
+        grid.addWidget(create_label("Lớp học *"), 4, 0)
+        grid.addWidget(create_label("Giới tính"), 4, 1)
         self._cmb_class = QComboBox(); self._cmb_class.setStyleSheet(combo_style()); self._cmb_class.setFixedHeight(48)
         self._cmb_gender = QComboBox(); self._cmb_gender.addItems(["Nam", "Nữ"]); self._cmb_gender.setStyleSheet(combo_style()); self._cmb_gender.setFixedHeight(48)
-        grid.addWidget(self._cmb_class, 3, 0)
-        grid.addWidget(self._cmb_gender, 3, 1)
+        grid.addWidget(self._cmb_class, 5, 0)
+        grid.addWidget(self._cmb_gender, 5, 1)
 
-        grid.addWidget(create_label("Số điện thoại"), 4, 0)
-        grid.addWidget(create_label("Email"), 4, 1)
+        grid.addWidget(create_label("Phòng"), 6, 0)
+        grid.addWidget(create_label("Số điện thoại"), 6, 1)
+        self._cmb_room = QComboBox(); self._cmb_room.addItem("-- Phòng --"); self._cmb_room.setStyleSheet(combo_style()); self._cmb_room.setFixedHeight(48)
         self._inp_phone = QLineEdit(); self._inp_phone.setStyleSheet(input_style()); self._inp_phone.setFixedHeight(48); self._inp_phone.setPlaceholderText("090xxxxxxx")
-        self._inp_email = QLineEdit(); self._inp_email.setStyleSheet(input_style()); self._inp_email.setFixedHeight(48); self._inp_email.setPlaceholderText("example@mail.com")
-        grid.addWidget(self._inp_phone, 5, 0)
-        grid.addWidget(self._inp_email, 5, 1)
+        grid.addWidget(self._cmb_room, 7, 0)
+        grid.addWidget(self._inp_phone, 7, 1)
 
-        grid.addWidget(create_label("Nguồn Camera chụp ảnh"), 6, 0, 1, 2)
+        grid.addWidget(create_label("Email"), 8, 0)
+        grid.addWidget(create_label("Nguồn Camera chụp ảnh"), 8, 1)
+        self._inp_email = QLineEdit(); self._inp_email.setStyleSheet(input_style()); self._inp_email.setFixedHeight(48); self._inp_email.setPlaceholderText("example@mail.com")
         self._cmb_camera = QComboBox(); self._cmb_camera.setStyleSheet(combo_style()); self._cmb_camera.setFixedHeight(48)
-        grid.addWidget(self._cmb_camera, 7, 0, 1, 2)
+        grid.addWidget(self._inp_email, 9, 0)
+        grid.addWidget(self._cmb_camera, 9, 1)
+
+        # Connect signals for cascading dropdowns
+        self._cmb_building.currentTextChanged.connect(self._on_building_changed)
+        self._cmb_floor.currentTextChanged.connect(self._on_floor_changed)
 
         layout.addLayout(grid)
         layout.addStretch(2)
@@ -488,6 +467,16 @@ class EnrollPage(QWidget):
         self._inp_name.setText(student.full_name or "")
         self._inp_phone.setText(student.phone or "")
         self._inp_email.setText(student.email or "")
+        
+        r_idx = self._cmb_room.findText(student.room or "-- Phòng --")
+        if r_idx >= 0: self._cmb_room.setCurrentIndex(r_idx)
+        
+        # Set building
+        b_idx = self._cmb_building.findText(student.building or "-- Chọn Mini PC (Tòa) --")
+        if b_idx >= 0: self._cmb_building.setCurrentIndex(b_idx)
+        # Set floor
+        f_idx = self._cmb_floor.findText(student.floor or "-- Tầng --")
+        if f_idx >= 0: self._cmb_floor.setCurrentIndex(f_idx)
 
         gender_map = {"Nam": 1, "Nữ": 2, "Khác": 3}
         idx = gender_map.get(student.gender, 0)
@@ -507,7 +496,7 @@ class EnrollPage(QWidget):
         self._title_lbl.setText("Cập Nhật Thông Tin")
         self._subtitle_lbl.setText(f"Chỉnh sửa thông tin và chụp lại ảnh mẫu — [{student.student_code}]")
         
-        for w in [self._inp_code, self._inp_name, self._cmb_class, self._cmb_gender, self._inp_phone, self._inp_email]:
+        for w in [self._inp_code, self._inp_name, self._cmb_class, self._cmb_gender, self._inp_phone, self._inp_email, self._cmb_building, self._cmb_floor, self._cmb_room]:
             w.setEnabled(True)
 
         self._btn_create.setText("💾  LƯU CẬP NHẬT")
@@ -544,6 +533,12 @@ class EnrollPage(QWidget):
         class_id = self._cmb_class.currentData()
         gender   = self._cmb_gender.currentText()
         gender   = None if gender == "-- Chọn --" else gender
+        building = self._cmb_building.currentText()
+        building = None if building == "-- Chọn Mini PC (Tòa) --" else building
+        floor    = self._cmb_floor.currentText()
+        floor    = None if floor == "-- Tầng --" else floor
+        room     = self._cmb_room.currentText()
+        room     = None if room == "-- Phòng --" else room
         phone    = self._inp_phone.text().strip() or None
         email    = self._inp_email.text().strip() or None
 
@@ -552,6 +547,7 @@ class EnrollPage(QWidget):
             updated = student_repo.update(
                 student_id=self._current_student_id, student_code=code, full_name=name,
                 class_id=class_id, gender=gender, phone=phone, email=email,
+                building=building, floor=floor, room=room
             )
             if not updated:
                 self._set_create_status("❌ Lỗi cập nhật thông tin!", Colors.RED)
@@ -618,15 +614,77 @@ class EnrollPage(QWidget):
         self._load_cameras()
 
 
+    def _on_building_changed(self, building: str):
+        self._cmb_floor.blockSignals(True)
+        self._cmb_floor.clear()
+        self._cmb_floor.addItem("-- Tầng --")
+        
+        if building in getattr(self, "_class_mapping", {}):
+            floors = sorted(self._class_mapping[building].keys())
+            if floors:
+                self._cmb_floor.addItems(floors)
+        else:
+            self._cmb_floor.addItems(["Tầng 1", "Tầng 2", "Tầng 3", "Tầng 4", "Tầng 5"])
+        
+        self._cmb_floor.blockSignals(False)
+        self._on_floor_changed(self._cmb_floor.currentText())
+
+    def _on_floor_changed(self, floor: str):
+        self._load_classes()
+        self._load_rooms(floor)
+
+    def _load_rooms(self, floor: str):
+        current_room = self._cmb_room.currentText()
+        self._cmb_room.blockSignals(True)
+        self._cmb_room.clear()
+        self._cmb_room.addItem("-- Phòng --")
+        
+        if floor != "-- Tầng --":
+            try:
+                floor_num = int(floor.split()[1])
+                for i in range(1, 8):  # 7 phòng mỗi tầng
+                    self._cmb_room.addItem(f"P{floor_num}{i:02d}")
+            except:
+                pass
+                
+        if current_room:
+            idx = self._cmb_room.findText(current_room)
+            if idx >= 0:
+                self._cmb_room.setCurrentIndex(idx)
+        self._cmb_room.blockSignals(False)
+
     def _load_classes(self):
+        current_class_name = self._cmb_class.currentText()
+        self._cmb_class.blockSignals(True)
         self._cmb_class.clear()
         self._cmb_class.addItem("-- Lớp --", None)
+        
+        building = self._cmb_building.currentText()
+        floor = self._cmb_floor.currentText()
+        
+        if building == "-- Chọn Mini PC (Tòa) --" or floor == "-- Tầng --":
+            self._cmb_class.blockSignals(False)
+            return
+        
+        allowed_classes = None
+        if building in getattr(self, "_class_mapping", {}) and floor in self._class_mapping[building]:
+            allowed_classes = self._class_mapping[building][floor]
+
         try:
             from database.repositories import class_repo
             for cls in class_repo.get_all():
-                self._cmb_class.addItem(cls.class_name, cls.class_id)
+                if allowed_classes is None or cls.class_name in allowed_classes:
+                    self._cmb_class.addItem(cls.class_name, cls.class_id)
+                    
+            # Khôi phục lựa chọn cũ nếu có
+            if current_class_name:
+                idx = self._cmb_class.findText(current_class_name)
+                if idx >= 0:
+                    self._cmb_class.setCurrentIndex(idx)
         except Exception as e:
             logger.warning(f"Không load được danh sách lớp: {e}")
+        finally:
+            self._cmb_class.blockSignals(False)
 
     def _check_existing_student(self):
         code = self._inp_code.text().strip()
@@ -678,6 +736,13 @@ class EnrollPage(QWidget):
         class_name = self._cmb_class.currentText()
         gender   = self._cmb_gender.currentText()
         gender   = None if gender == "-- Chọn --" else gender
+        building = self._cmb_building.currentText()
+        building = None if building == "-- Chọn Mini PC (Tòa) --" else building
+        floor    = self._cmb_floor.currentText()
+        floor    = None if floor == "-- Tầng --" else floor
+        floor    = None if floor == "-- Tầng --" else floor
+        room     = self._cmb_room.currentText()
+        room     = None if room == "-- Phòng --" else room
         phone    = self._inp_phone.text().strip() or None
         email    = self._inp_email.text().strip() or None
 
@@ -685,6 +750,7 @@ class EnrollPage(QWidget):
             from services.enrollment_service import enrollment_service
             sid = enrollment_service.create_student(
                 student_code=code, full_name=name, class_id=class_id, gender=gender, phone=phone, email=email,
+                class_name=class_name, building=building, floor=floor, room=room
             )
             if sid and sid > 0:
                 self._current_student_id = sid
@@ -869,12 +935,15 @@ class EnrollPage(QWidget):
         self._captured_frames    = []
         self._mode               = "create"
 
-        for w in [self._inp_code, self._inp_name, self._cmb_class, self._cmb_gender, self._inp_phone, self._inp_email, self._cmb_camera]:
+        for w in [self._inp_code, self._inp_name, self._cmb_class, self._cmb_gender, self._inp_phone, self._inp_email, self._cmb_camera, self._cmb_room, self._cmb_building, self._cmb_floor]:
             w.setEnabled(True)
             if isinstance(w, QLineEdit): w.clear()
             
         self._cmb_class.setCurrentIndex(0)
         self._cmb_gender.setCurrentIndex(0)
+        self._cmb_room.setCurrentIndex(0)
+        self._cmb_floor.setCurrentIndex(0)
+        self._cmb_building.setCurrentIndex(0)
         
         self._title_lbl.setText("Đăng Ký Học Viên")
         self._subtitle_lbl.setText("Hệ thống nhận diện khuôn mặt — Chụp 10 ảnh mẫu")

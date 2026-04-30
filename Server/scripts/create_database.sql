@@ -42,6 +42,10 @@ CREATE TABLE Students (
     phone         NVARCHAR(20)  NULL,
     email         NVARCHAR(100) NULL,
     class_id      INT           NULL REFERENCES Classes(class_id),
+    class_name    NVARCHAR(100) NULL,
+    building      NVARCHAR(100) NULL,
+    floor         NVARCHAR(50)  NULL,
+    room          NVARCHAR(50)  NULL,
     face_enrolled BIT           NOT NULL DEFAULT 0,
     created_at    DATETIME2     NOT NULL DEFAULT GETDATE()
 )
@@ -75,6 +79,7 @@ CREATE TABLE Cameras (
     rtsp_url      NVARCHAR(500) NULL,
     ip_address    NVARCHAR(50)  NULL,
     resolution    NVARCHAR(20)  NOT NULL DEFAULT '1280x720',
+    area_id       NVARCHAR(100) NULL,
     is_active     BIT           NOT NULL DEFAULT 1
 )
 GO

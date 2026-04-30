@@ -136,12 +136,62 @@ class AntiSpoofConfig:
     threshold: float = 0.80 # Ngưỡng xác định là mặt thật (tối đa 1.0)
 
 # ─────────────────────────────────────────────
-#  EDGE CONFIG — Cấu hình cho Mini PC
+#  WAKE-ON-LAN CONFIG
 # ─────────────────────────────────────────────
+WOL_MINI_PCS = [
+    {"name": "Mini PC KTX E4", "mac_address": "54-BF-64-9C-79-AC", "location": "KTX E4 - Tầng 4", "device_name": "Edge Box 01"},
+    {"name": "Mini PC KTX E5", "mac_address": "AA:BB:CC:DD:EE:02", "location": "KTX E5 - Tầng 5", "device_name": "Edge Box 02"},
+    # Thêm các Mini PC khác tại đây...
+]
+
+# ─────────────────────────────────────────────
+#  FLOOR-CLASS MAPPING (TÒA → TẦNG → LỚP + GIỚI TÍNH)
+#  area_id của Camera trong DB phải theo định dạng: "KTX E4_3"
+#  (Tòa nhà _ Số tầng)
+# ─────────────────────────────────────────────
+FLOOR_CLASS_MAPPING: dict = {
+    # ── KTX E4 — Nam ─────────────────────────
+    "KTX E4": {
+        "gender": "Nam",
+        "floors": {
+            1: ["B4D14", "B5D14", "B6D14"],
+            2: ["B1-LT8", "B2-LT8", "B3D14"],
+            3: ["B2D12", "B3D12", "B4D12", "B5D12"],
+            4: ["B3D13", "B4D13", "B5D13", "B6D13"],
+            5: ["VB2K3"],
+        }
+    },
+    # ── KTX E5 — Nam ─────────────────────────
+    "KTX E5": {
+        "gender": "Nam",
+        "floors": {
+            1: ["B1-VB2K4", "B2-VB2K4", "B3-VB2K4"],
+            2: ["VB2C1"],
+            3: ["B3D15", "B4D15", "B5D15", "B6D15", "B7D15", "B8D15"],
+            4: ["B9D15", "B10D15", "B11D15"],
+        }
+    },
+    # ── KTX E3 — Nữ ──────────────────────────
+    "KTX E3": {
+        "gender": "Nữ",
+        "floors": {
+            1: ["B3D13", "B4D13", "B5D13", "B6D13",
+                "B3D14", "B4D14", "B5D14", "B6D14"],
+            2: ["VB2K3",
+                "B1-VB2K4", "B2-VB2K4", "B3-VB2K4",
+                "VB2C1",
+                "B2D12", "B3D12", "B4D12", "B5D12",
+                "B1-LT8", "B2-LT8"],
+            3: ["B3D15", "B4D15", "B5D15", "B6D15", "B7D15",
+                "B8D15", "B9D15", "B10D15", "B11D15"],
+        }
+    },
+}
+
 @dataclass
 class EdgeConfig:
     """Cấu hình khi chạy ở chế độ Edge (Mini PC)."""
-    server_url:           str  = os.getenv("EDGE_SERVER_URL", "http://192.168.10.100:8000")
+    server_url:           str  = os.getenv("EDGE_SERVER_URL", "http://192.168.1.100:9696")
     api_key:              str  = os.getenv("EDGE_API_KEY", "faceattend_secret_2026")
     camera_id:            str  = os.getenv("EDGE_CAMERA_ID", "CAM_01")
     camera_source:        str  = os.getenv("EDGE_CAMERA_SOURCE", "0")  # "0" = webcam, "rtsp://..." = IP cam

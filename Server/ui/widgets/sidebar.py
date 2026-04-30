@@ -128,9 +128,21 @@ class Sidebar(QWidget):
         """)
         lb_lay = QHBoxLayout(logo_box)
         lb_lay.setContentsMargins(0, 0, 0, 0)
-        logo_lbl = QLabel("👁")
+        from PyQt6.QtGui import QPixmap
+        import os
+        icon_path = os.path.join(str(Path(__file__).parent.parent.parent), "assets", "app_icon.png")
+        
+        logo_lbl = QLabel()
         logo_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        logo_lbl.setStyleSheet("font-size: 18px; color: white; background: transparent;")
+        logo_lbl.setStyleSheet("background: transparent;")
+        
+        pixmap = QPixmap(icon_path)
+        if not pixmap.isNull():
+            logo_lbl.setPixmap(pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        else:
+            logo_lbl.setText("👁")
+            logo_lbl.setStyleSheet("font-size: 18px; color: white; background: transparent;")
+            
         lb_lay.addWidget(logo_lbl)
 
         title_box = QVBoxLayout()

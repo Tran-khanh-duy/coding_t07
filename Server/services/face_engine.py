@@ -36,13 +36,12 @@ from database.models import EmbeddingCache
 try:
     if anti_spoof_config.enabled:
         from services.anti_spoof_service import anti_spoof_service
-        # Kiểm tra xem service có nạp được model nào không
-        if anti_spoof_service and anti_spoof_service.models_cache:
+        if anti_spoof_service is not None:
             ANTI_SPOOF_AVAILABLE = True
-            logger.success("🚀 Anti-Spoofing đã sẵn sàng và đang hoạt động!")
+            logger.success("🚀 Anti-Spoofing Module đã import thành công. Model sẽ được load lazily!")
         else:
             ANTI_SPOOF_AVAILABLE = False
-            logger.warning("⚠️ Anti-Spoofing Service đã nạp nhưng không tìm thấy model. Vui lòng kiểm tra thư mục resources/anti_spoof_models.")
+            logger.warning("⚠️ Không thể khởi tạo Anti-Spoofing Service.")
     else:
         ANTI_SPOOF_AVAILABLE = False
         logger.info("ℹ️ Anti-Spoofing đang bị tắt trong cấu hình.")
@@ -218,6 +217,24 @@ class FaceEngine:
     @property
     def is_ready(self) -> bool:
         return self._model_loaded and self._app is not None
+
+    def unload_model(self):
+        """Giải phóng model khỏi GPU/RAM để tránh tràn bộ nhớ."""
+        with self._load_lock:
+            if self._app:
+                del self._app
+                self._app = None
+            self._model_loaded = False
+            
+            import gc
+            gc.collect()
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+            logger.info("🗑️ Đã giải phóng AI Model khỏi bộ nhớ (RAM/VRAM).")
 
     # ─── Detect khuôn mặt ─────────────────────
 

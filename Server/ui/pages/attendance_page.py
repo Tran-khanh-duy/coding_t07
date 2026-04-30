@@ -110,14 +110,29 @@ class RemoteStreamWorker(QThread):
         self._running = True
         self._paused = False
 
+        from PyQt6.QtCore import QMutex
+        self._mutex = QMutex()
+
     def pause(self):
-        self._paused = True
+        self._mutex.lock()
+        try:
+            self._paused = True
+        finally:
+            self._mutex.unlock()
 
     def resume(self):
-        self._paused = False
+        self._mutex.lock()
+        try:
+            self._paused = False
+        finally:
+            self._mutex.unlock()
 
     def stop(self):
-        self._running = False
+        self._mutex.lock()
+        try:
+            self._running = False
+        finally:
+            self._mutex.unlock()
 
     def run(self):
         import requests, cv2, time
@@ -126,19 +141,32 @@ class RemoteStreamWorker(QThread):
         logger.info(f"RemoteStreamWorker started: {self.api_url}")
         last_time = time.time()
         
-        while self._running:
-            if self._paused:
-                time.sleep(0.5)
+        # Dùng Session() để tái sử dụng TCP connection, giúp mượt hơn và giảm overhead.
+        session = requests.Session()
+        
+        while True:
+            self._mutex.lock()
+            try:
+                running = self._running
+                is_paused = self._paused
+            finally:
+                self._mutex.unlock()
+                
+            if not running:
+                break
+                
+            if is_paused:
+                time.sleep(0.1)
                 continue
             try:
                 # 1. Poll khung hình với camera_id đã được chuẩn hóa
                 params = {"camera_id": self.camera_id}
-                resp = requests.get(self.api_url, params=params, timeout=3)
+                resp = session.get(self.api_url, params=params, timeout=3)
                 
                 if resp.status_code == 200:
                     image_bytes = resp.content
                     if not image_bytes:
-                        time.sleep(0.1)
+                        time.sleep(0.05)
                         continue
                         
                     nparr = np.frombuffer(image_bytes, np.uint8)
@@ -170,8 +198,8 @@ class RemoteStreamWorker(QThread):
                     self.error_occurred.emit(msg)
                     time.sleep(0.5)
 
-                # Giới hạn tốc độ poll
-                time.sleep(0.02)
+                # Giới hạn tốc độ poll để UI không bị đơ
+                time.sleep(0.03)
 
             except requests.exceptions.ConnectionError:
                 self.error_occurred.emit("Mất kết nối Server")
@@ -431,41 +459,55 @@ class AttendancePage(QWidget):
 
         return panel
 
+    def select_camera_by_id(self, cam_source: str):
+        """Được gọi từ MainWindow khi user click thẻ Camera ở Dashboard."""
+        # Tìm lại label dựa trên source
+        label = "Camera"
+        if hasattr(self, "_cam_groups"):
+            for group, cams in self._cam_groups.items():
+                for name, src, _ in cams:
+                    if src == cam_source:
+                        label = name
+                        break
+        self._on_camera_selected(cam_source, label)
+
     def _on_camera_selected(self, source, label):
         """Xử lý khi người dùng chọn camera."""
         self._selected_camera_source = source
         self._lbl_current_cam.setText(f"🎥 {label}")
         
-        # [NEW] Nếu đang trong phiên, cập nhật target_camera ngay lập tức để Mini PC chuyển luồng
-        if hasattr(self, "_session_id") and self._session_id:
-            def update_target():
-                try:
-                    requests.post("http://127.0.0.1:9696/api/system/command", json={
-                        "command": "START",
-                        "session_id": self._session_id,
-                        "target_camera": source
-                    }, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=2)
-                except: pass
-            import threading
-            threading.Thread(target=update_target, daemon=True).start()
+        # Gửi target_camera lên Server ngay lập tức để Mini PC bắt đầu stream
+        def update_target():
+            try:
+                # Nếu đang trong phiên thì START, nếu chưa thì STOP (Mini PC vẫn stream ảnh nhưng AI tắt)
+                cmd = "START" if (hasattr(self, "_session_id") and self._session_id) else "STOP"
+                payload = {"command": cmd, "target_camera": source}
+                if cmd == "START":
+                    payload["session_id"] = self._session_id
+                    
+                requests.post("http://127.0.0.1:9696/api/system/command", json=payload, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=2)
+            except: pass
+        import threading
+        threading.Thread(target=update_target, daemon=True).start()
 
-        # Nếu đang live, chuyển ngay luồng stream mới trên giao diện
-        if hasattr(self, "_worker") and self._worker and self._worker.isRunning():
+        # Luôn chuyển/bật luồng stream mới trên giao diện
+        if hasattr(self, "_worker") and self._worker:
             self._worker.stop()
             self._worker.wait()
             
-            # Khởi tạo worker mới cho camera vừa chọn
-            # [FIX] Cả CAM_xx và rtsp:// đều là camera remote từ Mini PC
-            is_remote = (source.upper().startswith("CAM_") 
-                         or source.lower().startswith("rtsp://"))
-            if is_remote:
-                self._worker = RemoteStreamWorker(camera_id=source)
-            else:
-                self._worker = AttendanceWorker(camera_source=source)
-                
-            self._worker.frame_ready.connect(self._on_frame)
-            self._worker.error_occurred.connect(self._on_camera_error)
-            self._worker.start()
+        # Khởi tạo worker mới cho camera vừa chọn
+        is_remote = (source.upper().startswith("CAM_") or source.lower().startswith("rtsp://"))
+        if is_remote:
+            self._worker = RemoteStreamWorker(camera_id=source)
+        else:
+            self._worker = AttendanceWorker(camera_source=source)
+            
+        self._worker.frame_ready.connect(self._on_frame)
+        self._worker.error_occurred.connect(self._on_camera_error)
+        self._worker.start()
+        
+        self._camera_view.set_placeholder("🖥️  ĐANG KẾT NỐI CAMERA...")
+        self._cam_stack.setCurrentIndex(1)
             
         self._btn_start.setEnabled(True)
         self._btn_start.setStyleSheet(f"""
@@ -680,18 +722,12 @@ class AttendancePage(QWidget):
             cameras = camera_repo.get_all(active_only=True)
             self._cam_groups = {f"KTX E{i}": [] for i in range(1, 7)}
             
-            # 1. Phân loại camera từ DB (cho các tòa nhà E1-E6)
-            for cam in cameras:
-                name = cam.camera_name.upper()
-                source = cam.rtsp_url
-                group = None
-                for i in range(1, 7):
-                    if f"E{i}" in name:
-                        group = f"KTX E{i}"
-                        break
-                
-                if group:
-                    if source: self._cam_groups[group].append((cam.camera_name, source, "Local"))
+            # NOTE: Camera từ DB KHÔNG hiển thị trong dropdown.
+            # Chúng chỉ dùng để server tra cứu area_id khi Edge gửi RTSP URL lên.
+            # Dropdown chỉ hiện camera live từ Edge API (bên dưới).
+            _db_rtsp_set = {cam.rtsp_url for cam in cameras if cam.rtsp_url}
+
+
 
             # [NEW] Xây dựng slot camera mặc định cho Mini PC từ dữ liệu Live (Qua API Port 9696)
             try:
@@ -711,9 +747,11 @@ class AttendancePage(QWidget):
                             for k, v in status.items():
                                 cam_name = k
                                 cam_source = v
+                                is_active = True
                                 if isinstance(v, dict):
                                     cam_name = v.get("name", k)
                                     cam_source = v.get("source", "")
+                                    is_active = v.get("is_active", True)
                                 
                                 # Trích xuất IP từ source
                                 cam_ip = ""
@@ -732,13 +770,18 @@ class AttendancePage(QWidget):
                                         ip_port = k.split("@")[1].split("/")[0] if "@" in k else k.split("://")[1].split("/")[0]
                                     except:
                                         ip_port = "IP Cam"
-                                    label = f"🟢 IP Cam ({ip_port}) [ONLINE]"
+                                    
+                                    if not is_active:
+                                        label = f"🔴 IP Cam ({ip_port}) [MẤT KẾT NỐI]"
+                                    else:
+                                        label = f"🟢 IP Cam ({ip_port}) [ONLINE]"
+                                        
                                     source = k
                                     self._cam_groups[group_key].append((label, source, ip_port))
                                 else:
                                     # Sử dụng tên "cứng" từ Edge config (env.edge)
-                                    if display_ip == "OFFLINE":
-                                        label = f"⚪ {cam_name} [OFFLINE]"
+                                    if not is_active or display_ip == "OFFLINE":
+                                        label = f"🔴 {cam_name} ({display_ip}) [MẤT KẾT NỐI]"
                                     else:
                                         label = f"🟢 {cam_name} ({display_ip}) [ONLINE]"
                                     
@@ -765,11 +808,16 @@ class AttendancePage(QWidget):
             for g_name in groups_to_render:
                 cams = self._cam_groups.get(g_name, [])
                 
-                # Tạo placeholder cho 5 tầng nếu tòa nhà này thuộc danh sách cấu hình nhưng chưa có camera Online
+                # Tạo placeholder OFFLINE chỉ cho các tầng thực sự có cấu hình trong FLOOR_CLASS_MAPPING
                 is_configured_ktx = any(g_name == g for g in app_config.camera_groups)
                 if not cams and is_configured_ktx:
-                    for i in range(1, 6):
-                        cams.append((f"⚪ Tầng {i} [OFFLINE]", f"OFFLINE_{g_name}_{i}", "OFFLINE"))
+                    try:
+                        from config import FLOOR_CLASS_MAPPING
+                        floor_map = FLOOR_CLASS_MAPPING.get(g_name, {}).get("floors", {})
+                        for floor_num in sorted(floor_map.keys()):
+                            cams.append((f"⚪ Tầng {floor_num} [OFFLINE]", f"OFFLINE_{g_name}_{floor_num}", "OFFLINE"))
+                    except Exception:
+                        pass  # Không tạo placeholder nếu không có mapping
                         
                 if not cams: continue
                 
@@ -801,13 +849,24 @@ class AttendancePage(QWidget):
         session_date = date(qdate.year(), qdate.month(), qdate.day())
 
         try:
+            from database.connection import get_db
+            db = get_db()
+            db.execute("IF NOT EXISTS (SELECT 1 FROM Classes WHERE class_code = 'GLOBAL') INSERT INTO Classes (class_code, class_name) VALUES ('GLOBAL', ?);", ("Toàn trường",), commit=True)
+            
             from database.repositories import class_repo
             classes = class_repo.get_all()
-            if not classes:
+            target_class = next((c for c in classes if c.class_name == "Toàn trường"), None)
+            
+            if target_class:
+                class_id = target_class.class_id
+            elif classes:
+                class_id = classes[0].class_id
+            else:
                 QMessageBox.warning(self, "Lỗi", "Chưa có danh mục Lớp Học nào trong CSDL!")
                 return
-            class_id = classes[0].class_id
-        except Exception:
+        except Exception as e:
+            from loguru import logger
+            logger.error(f"Lỗi tìm Lớp Toàn trường: {e}")
             class_id = 1
 
         try:
@@ -849,33 +908,10 @@ class AttendancePage(QWidget):
             import threading
             threading.Thread(target=send_start, daemon=True).start()
 
-            # [FIX] Phân loại: 
-            # - 'CAM_xx' → Mini PC camera (ID ngắn)
-            # - 'rtsp://' → IP Camera trực tiếp hoặc đi qua Mini PC proxy
-            # - Còn lại → Camera cục bộ (Webcam)
-            target_source = str(self._selected_camera_source or "")
-            is_remote = (target_source.upper().startswith("CAM_") 
-                         or target_source.lower().startswith("rtsp://"))
-            
-            if target_source and not is_remote:
-                # Webcam cục bộ
-                self._worker = AttendanceWorker(camera_source=target_source)
-                self._worker.frame_ready.connect(self._on_frame)
-                self._worker.error_occurred.connect(self._on_camera_error)
-                self._worker.start()
-                self._cam_stack.setCurrentIndex(1)
-            elif is_remote:
-                # Camera từ Mini PC (cả ID ngắn lẫn RTSP URL)
-                self._worker = RemoteStreamWorker(camera_id=target_source)
-                self._worker.frame_ready.connect(self._on_frame)
-                self._worker.error_occurred.connect(self._on_camera_error)
-                self._worker.start()
-                self._camera_view.set_placeholder("🖥️  ĐANG KẾT NỐI MINI PC...") 
-                self._cam_stack.setCurrentIndex(1)
-            else:
-                self._worker = None
-                self._camera_view.set_placeholder("") 
-                self._cam_stack.setCurrentIndex(1)
+            # Không khởi tạo lại worker vì đã khởi tạo liên tục ở _on_camera_selected
+            if not hasattr(self, "_worker") or not self._worker or not self._worker.isRunning():
+                QMessageBox.warning(self, "Lỗi", "Vui lòng chọn lại Camera để kết nối!")
+                return
 
             self._btn_start.hide()
             self._btn_stop.show()
@@ -901,10 +937,8 @@ class AttendancePage(QWidget):
         )
         if reply != QMessageBox.StandardButton.Yes: return
 
-        if hasattr(self, "_worker") and self._worker:
-            self._worker.stop()
-            self._worker.wait(3000)
-            self._worker = None
+        # Xoá logic dừng worker ở đây để camera vẫn tiếp tục stream live
+        pass
 
         try:
             from services.attendance_service import attendance_service
@@ -988,8 +1022,11 @@ class AttendancePage(QWidget):
     def _show_toast(self, msg: str):
         self._toast.setText(msg)
         self._toast.show()
-        # Lưu ý: cần khởi tạo self._toast_timer nếu sử dụng, hiện tại tạm ẩn chức năng ẩn tự động hoặc bạn tự thêm QTimer
-        # self._toast_timer.start(3000)
+        if not hasattr(self, '_toast_timer'):
+            self._toast_timer = QTimer(self)
+            self._toast_timer.setSingleShot(True)
+            self._toast_timer.timeout.connect(self._toast.hide)
+        self._toast_timer.start(3000)
 
     def _set_cam_status(self, text: str, color: str):
         self._lbl_cam_status.setText(text)
@@ -1013,20 +1050,18 @@ class AttendancePage(QWidget):
                 code = p["code"]
                 if code not in self._rendered_student_codes:
                     self._rendered_student_codes.add(code)
-                    
                     event = {
                         "full_name": p["name"],
-                        "class_code": "", # Fetching if needed, leaving empty for now
+                        "class_code": p.get("class_code", ""),
                         "student_code": code,
                         "similarity": p["score"],
                         "time_str": p["time"].strftime("%H:%M:%S") if hasattr(p["time"], "strftime") else str(p["time"])
                     }
                     self._on_attendance_done(event)
                     
-            # Update stats: ĐÃ SỬA LỖI HARDCODE + 10 TẠI ĐÂY
-            # Lấy sĩ số thực tế (tạm gán cứng = 4 theo DB của bạn)
-            # Nếu sau này có hàm lấy tự động, bạn dùng: total_students = class_repo.get_student_count(class_id)
-            total_students = 4 
+            # Lấy sĩ số thực tế theo camera được chọn
+            from database.repositories import student_repo
+            total_students = student_repo.get_student_count_by_camera(self._selected_camera_source)
             self._stat_total.setText(str(total_students))
             
             # Tính toán số lượng Vắng
@@ -1034,7 +1069,8 @@ class AttendancePage(QWidget):
             self._stat_absent.setText(str(max(0, absent_count)))
             
         except Exception as e:
-            pass
+            logger.error(f"_poll_live_records error: {e}")
+
 
     def _update_clock(self):
         if self._session_start:

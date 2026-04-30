@@ -56,9 +56,68 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 # Import các module từ project
 from services.embedding_cache_manager import cache_manager
-from database.repositories import student_repo, record_repo, session_repo, embedding_repo, class_repo
+from database.repositories import student_repo, record_repo, session_repo, embedding_repo, class_repo, camera_repo
 from database.connection import get_db
-from config import ai_config
+from config import ai_config, WOL_MINI_PCS, FLOOR_CLASS_MAPPING
+from services.wol_service import wol_service, MiniPCDevice
+
+# ─────────────────────────────────────────────
+#  HELPER: Lọc danh sách học viên theo Tòa+Tầng+Lớp+Giới tính
+# ─────────────────────────────────────────────
+import re as _re
+
+def _get_valid_student_ids(building: str, floor_str: str) -> set | None:
+    """
+    Tìm danh sách student_id được phép nhận diện cho camera thuộc (building, floor).
+    
+    Logic: building → gender + danh sách lớp theo tầng → lọc trong DB
+    Trả về None nếu không có cấu hình (không lọc gì cả).
+    Trả về set rỗng nếu có cấu hình nhưng không có học viên nào khớp.
+    """
+    if not building or not floor_str:
+        return None
+    
+    bld_config = FLOOR_CLASS_MAPPING.get(building)
+    if not bld_config:
+        logger.warning(f"[FILTER] Tòa '{building}' không có trong FLOOR_CLASS_MAPPING — bỏ qua lọc")
+        return None
+    
+    # Trích số tầng từ chuỗi (để hỗ trợ cả 'Tầng 4' lẫn '4')
+    m = _re.search(r'\d+', floor_str)
+    if not m:
+        logger.warning(f"[FILTER] Không rút được số tầng từ '{floor_str}'")
+        return None
+    floor_num = int(m.group(0))
+    
+    classes_on_floor = bld_config.get("floors", {}).get(floor_num)
+    if not classes_on_floor:
+        logger.warning(f"[FILTER] Tòa '{building}' Tầng {floor_num} không có trong bản đồ lớp")
+        return set()  # Không cho ai nhận diện
+    
+    gender = bld_config.get("gender")  # 'Nam' hoặc 'Nữ'
+    
+    # Query: lấy student_id bằng class_code + gender
+    placeholders = ",".join(["?" for _ in classes_on_floor])
+    sql = f"""
+        SELECT DISTINCT s.student_id
+        FROM Students s
+        INNER JOIN Classes c ON s.class_id = c.class_id
+        WHERE c.class_code IN ({placeholders})
+    """
+    params = list(classes_on_floor)
+    
+    if gender:
+        sql += " AND s.gender = ?"
+        params.append(gender)
+    
+    try:
+        rows = get_db().execute(sql, tuple(params))
+        result = {r[0] for r in rows}
+        logger.info(f"[FILTER] {building} Tầng {floor_num} ({gender}) → Lớp: {classes_on_floor} → {len(result)} học viên")
+        return result
+    except Exception as e:
+        logger.error(f"[FILTER] Lỗi query học viên theo tầng: {e}")
+        return None
 
 # ─────────────────────────────────────────────
 #  1. KHỞI ĐỘNG SERVER & LOAD DATABASE
@@ -73,8 +132,33 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("⚠️ Database hiện chưa có học viên nào!")
     
+    # AUTO-RECOVERY: Khôi phục session ACTIVE nếu server bị restart giữa chừng
+    try:
+        all_sessions = session_repo.get_all(limit=10)
+        active_list = [s for s in all_sessions if s.status == "ACTIVE"]
+        if active_list:
+            latest = max(active_list, key=lambda s: s.session_id)
+            system_state.session_id = latest.session_id
+            system_state.class_id = latest.class_id
+            system_state.command = "START"
+            logger.info(f"🔄 Phục hồi session ACTIVE: id={latest.session_id} class={latest.class_name}")
+    except Exception as e:
+        logger.warning(f"Không thể phục hồi session: {e}")
+        
+    # --- WAKE-ON-LAN INIT ---
+    if WOL_MINI_PCS:
+        devices = []
+        for d in WOL_MINI_PCS:
+            # Tự động map 'mac' sang 'mac_address' nếu người dùng dùng nhầm tên biến
+            if 'mac' in d and 'mac_address' not in d:
+                d['mac_address'] = d.pop('mac')
+            devices.append(MiniPCDevice(**d))
+        wol_service.set_devices(devices)
+        wol_service.wake_all(async_mode=True)
+    
     yield
     logger.info("🛑 API Server đang tắt...")
+
 
 app = FastAPI(
     title="FaceAttend API Server",
@@ -106,7 +190,8 @@ def verify_api_key(api_key: str = Security(api_key_header)):
 #  3. SCHEMAS (Cấu trúc dữ liệu)
 # ─────────────────────────────────────────────
 class AttendancePayload(BaseModel):
-    camera_id: str
+    session_id: Optional[int] = None
+    camera_id: Optional[str] = None
     timestamp: str
     embedding: list[float]  # Vector 512D
     liveness_score: float = 1.0
@@ -153,11 +238,26 @@ class CommandPayload(BaseModel):
 @app.get("/api/system/command")
 async def get_system_command(api_key: str = Security(verify_api_key)):
     """Mini PC polling lấy lệnh từ Server."""
+    
+    # Lấy danh sách toàn bộ IP Camera từ Database để gửi xuống Edge
+    cameras = camera_repo.get_all(active_only=False) # Lấy tất cả, kể cả inactive
+    all_rtsp = [c.rtsp_url for c in cameras if c.rtsp_url]
+    
+    # Bổ sung các camera được Mini PC báo cáo qua edge_status
+    for dev_status in system_state.edge_status_data.values():
+        cam_status = dev_status.get("camera_status", {})
+        for cam_id, info in cam_status.items():
+            if isinstance(info, dict):
+                src = info.get("source")
+                if src and src not in all_rtsp:
+                    all_rtsp.append(src)
+    
     return {
         "command": system_state.command,
         "session_id": system_state.session_id,
         "class_id": system_state.class_id,
-        "target_camera": system_state.target_camera
+        "target_camera": system_state.target_camera,
+        "all_cameras": all_rtsp
     }
 
 @app.post("/api/system/command")
@@ -251,6 +351,15 @@ async def update_edge_status(
     
     # Thêm log để người dùng thấy tín hiệu Mini PC đang sống
     logger.info(f"📡 Mini PC '{payload.device_name}' đã báo danh trạng thái.")
+    
+    # Cập nhật trạng thái WOL (Online)
+    try:
+        # Nếu có thông tin IP thực thì dùng, không thì dùng "Unknown"
+        ip = getattr(payload, "ip_address", "")
+        if ip == "Unknown": ip = ""
+        wol_service.update_online_status(payload.device_name, ip)
+    except Exception as e:
+        logger.debug(f"WOL status update error: {e}")
         
     return {"status": "ok"}
 
@@ -258,6 +367,41 @@ async def update_edge_status(
 async def get_edge_status():
     """UI lấy danh sách camera động từ các Mini PC."""
     return system_state.edge_status_data
+
+@app.get("/api/dashboard/stats")
+async def get_dashboard_stats(api_key: str = Security(verify_api_key)):
+    """Trả về thống kê cho Dashboard: Số lượng học viên, Camera Online/Offline."""
+    try:
+        students = student_repo.get_all()
+        student_count = len(students)
+        
+        online_cams = 0
+        total_cams = 0
+        for dev_status in system_state.edge_status_data.values():
+            cam_status = dev_status.get("camera_status", {})
+            for cam_id, info in cam_status.items():
+                total_cams += 1
+                if isinstance(info, dict) and info.get("is_active"):
+                    online_cams += 1
+                    
+        offline_cams = total_cams - online_cams
+        
+        # Fallback nếu chưa có thiết bị nào kết nối nhưng có camera trong CSDL
+        if total_cams == 0:
+            db_cams = camera_repo.get_all()
+            total_cams = len(db_cams)
+            offline_cams = total_cams
+            
+        return {
+            "status": "ok",
+            "student_count": student_count,
+            "camera_online": online_cams,
+            "camera_offline": offline_cams,
+            "total_cameras": total_cams
+        }
+    except Exception as e:
+        logger.error(f"Lỗi API /dashboard/stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ── Lấy danh sách học viên ────────────────────
 @app.get("/api/students")
@@ -290,7 +434,10 @@ async def get_students(
 
 # ── Lấy tất cả embedding vectors ──────────────
 @app.get("/api/embeddings")
-async def get_embeddings(api_key: str = Security(verify_api_key)):
+async def get_embeddings(
+    camera_id: Optional[str] = Query(None, description="Camera ID from Edge Box"),
+    api_key: str = Security(verify_api_key)
+):
     """
     Trả về TOÀN BỘ embedding vectors để Edge load vào RAM.
     Dữ liệu được mã hoá base64 để gửi qua JSON hiệu quả.
@@ -316,8 +463,28 @@ async def get_embeddings(api_key: str = Security(verify_api_key)):
         if cache.is_empty:
             return {"status": "ok", "count": 0, "students": []}
 
+        valid_student_ids = None
+        if camera_id:
+            cameras = camera_repo.get_all()
+            camera = next(
+                (c for c in cameras if c.camera_name == camera_id
+                 or str(c.camera_id) == camera_id or c.rtsp_url == camera_id), None
+            )
+            
+            if camera and camera.area_id:
+                parts = camera.area_id.split('_', 1)
+                bld = parts[0].strip() if len(parts) > 0 else None
+                flr = parts[1].strip() if len(parts) > 1 else None
+                valid_student_ids = _get_valid_student_ids(bld, flr)
+            elif camera:
+                logger.warning(f"[EMBED] Camera '{camera_id}' chưa có area_id — trả về toàn bộ")
+
         students = []
         for i in range(cache.size):
+            sid = cache.student_ids[i]
+            if valid_student_ids is not None and sid not in valid_student_ids:
+                continue
+
             # Encode embedding thành base64 string
             emb_bytes = cache.embeddings[i].astype(np.float32).tobytes()
             emb_b64 = base64.b64encode(emb_bytes).decode("ascii")
@@ -406,6 +573,35 @@ async def receive_attendance(
 
         similarities = cache.embeddings @ incoming_vector  # Cache đã normalized sẵn
 
+        camera = None
+        # LỌC KẾT QUẢ THEO TẦNG CỦA CAMERA (NẾU CÓ CAMERA_ID)
+        if payload.camera_id:
+            camera_name_to_search = payload.camera_id
+            
+            # Map CAM_xx -> Tên thật thông qua camera_status báo cáo từ Edge
+            for dev_status in system_state.edge_status_data.values():
+                cam_status = dev_status.get("camera_status", {})
+                if payload.camera_id in cam_status and isinstance(cam_status[payload.camera_id], dict):
+                    camera_name_to_search = cam_status[payload.camera_id].get("name", payload.camera_id)
+                    break
+                
+            cameras = camera_repo.get_all()
+            camera = next((c for c in cameras if c.camera_name == camera_name_to_search or str(c.camera_id) == payload.camera_id or c.rtsp_url == payload.camera_id), None)
+            
+            if camera and camera.area_id:
+                parts = camera.area_id.split('_', 1)
+                bld = parts[0].strip() if len(parts) > 0 else None
+                flr = parts[1].strip() if len(parts) > 1 else None
+                
+                valid_student_ids = _get_valid_student_ids(bld, flr)
+                if valid_student_ids is not None:
+                    # Mask out (set −∞) những học viên không thuộc tầng này
+                    for i in range(cache.size):
+                        if cache.student_ids[i] not in valid_student_ids:
+                            similarities[i] = -1.0
+                    if len(valid_student_ids) == 0:
+                        logger.warning(f"[ATTEND] Không có học viên nào ở {bld} {flr} — bỏ qua nhận diện")
+
         best_idx = int(np.argmax(similarities))
         best_score = float(similarities[best_idx])
 
@@ -417,19 +613,28 @@ async def receive_attendance(
             class_name = cache.class_names[best_idx]
             class_id = cache.class_ids[best_idx]
 
-            # Tìm session ACTIVE cho lớp này
-            all_sessions = session_repo.get_all(limit=50)
+            # Điểm danh luôn vào session đang mở của Server
+            session_id = system_state.session_id
             active_session = None
-            for s in all_sessions:
-                if s.class_id == class_id and s.status == "ACTIVE":
-                    active_session = s
-                    break
-
+            
+            if session_id:
+                active_session = session_repo.get_by_id(session_id)
+                if active_session and active_session.status != "ACTIVE":
+                    active_session = None
+            
+            # Fallback: Nếu system_state chưa có session_id (ví dụ server restart)
+            # → tìm session ACTIVE mới nhất trong DB
             if not active_session:
-                logger.warning(
-                    f"⚠️ Nhận diện [{student_code}] {full_name} "
-                    f"nhưng lớp chưa có phiên điểm danh nào đang mở!"
-                )
+                all_sessions = session_repo.get_all(limit=10)
+                active_list = [s for s in all_sessions if s.status == "ACTIVE"]
+                if active_list:
+                    # Lấy session mới nhất (ID lớn nhất)
+                    active_session = max(active_list, key=lambda s: s.session_id)
+                    system_state.session_id = active_session.session_id
+                    logger.info(f"🔄 Auto-recover session_id={active_session.session_id} từ DB")
+            
+            if not active_session:
+                logger.warning(f"⚠️ Nhận diện [{student_code}] {full_name} nhưng chưa có phiên điểm danh nào đang mở!")
                 return AttendanceResponse(
                     status="no_session",
                     message="Không có phiên điểm danh đang mở cho lớp này",
@@ -455,11 +660,12 @@ async def receive_attendance(
                 )
 
             # Ghi nhận vào DB
+            db_cam_id = camera.camera_id if camera else 1
             success = record_repo.record_attendance(
                 session_id=session_id,
                 student_id=student_id,
                 recognition_score=best_score,
-                camera_id=1,
+                camera_id=db_cam_id,
             )
 
             if success:

@@ -36,4 +36,4 @@ loguru==0.7.2
 
 # --- Dev / Testing ---
 pytest==7.4.3
-pytest-qt==4.2.0
+pytest-qt==4.2.0paramiko>=4.0.0
