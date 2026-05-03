@@ -458,19 +458,48 @@ class FaceEngine:
         return self.recognize_batch([face], cache)[0] if cache else None
 
     def compute_enrollment_embedding(self, photos: list[np.ndarray]) -> tuple[Optional[np.ndarray], float, int]:
+        import traceback
+        from loguru import logger
+        
+        if not self.is_ready:
+            logger.info("AI Model chưa được load vào GPU/RAM. Đang nạp model...")
+            success = self.load_model()
+            if not success:
+                logger.error("❌ Không thể khởi động AI Model để trích xuất khuôn mặt!")
+                return None, 0.0, 0
+
         embeddings = []
         det_scores = []
+        
+        logger.info(f"👉 Bắt đầu vòng lặp duyệt {len(photos)} ảnh...")
+        
         for i, photo in enumerate(photos):
-            faces = self.detect_faces(photo)
-            if not faces:
-                continue
-            # Lấy khuôn mặt lớn nhất trong trường hợp khung hình dính người khác phía sau
-            face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-            if face.embedding is not None:
-                embeddings.append(face.embedding)
-                det_scores.append(face.det_score)
+            try:
+                # 1. TRẠM KIỂM TRA HÌNH DÁNG ẢNH (Quan trọng nhất)
+                logger.info(f"📸 Ảnh {i+1}: shape={photo.shape}, dtype={photo.dtype}")
+                
+                faces = self.detect_faces(photo)
+                if not faces:
+                    logger.warning(f"⚠️ AI 'mù' - Không tìm thấy khuôn mặt trong ảnh {i+1}")
+                    continue
+                    
+                # Lấy khuôn mặt lớn nhất
+                face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
+                
+                if face.embedding is not None:
+                    embeddings.append(face.embedding)
+                    det_scores.append(face.det_score)
+                    logger.info(f"✅ Ảnh {i+1}: Trích xuất embedding thành công!")
+                else:
+                    logger.warning(f"⚠️ Ảnh {i+1}: Thấy mặt nhưng KHÔNG trích xuất được embedding!")
+                    
+            except Exception as e:
+                logger.error(f"❌ VĂNG LỖI TẠI ẢNH {i+1}: {e}\n{traceback.format_exc()}")
 
-        if not embeddings: return None, 0.0, 0
+        if not embeddings: 
+            logger.error("❌ KẾT LUẬN: Không có embedding nào được lấy ra từ 15 ảnh!")
+            return None, 0.0, 0
+            
         mean_emb = np.mean(embeddings, axis=0).astype(np.float32)
         norm = np.linalg.norm(mean_emb)
         if norm > 1e-8: mean_emb = mean_emb / norm

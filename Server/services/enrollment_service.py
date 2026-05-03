@@ -235,51 +235,75 @@ class EnrollmentService:
                 )
             )
 
-        # Background Task tự động trích xuất Vector
-        def _extract_bg():
-            try:
-                logger.info(f"⚙️ [Background] Tính embedding cho [{student.student_code}] từ {len(frames)} ảnh...")
-                embedding, avg_score, valid_count = face_engine.compute_enrollment_embedding(frames)
-                if embedding is not None and valid_count >= ai_config.min_enroll_photos:
-                    embedding_repo.save_embedding(
-                        student_id=student_id,
-                        embedding=embedding,
-                        model_version="buffalo_l",
-                    )
-                    student_repo.update_enrollment_status(student_id, enrolled=True)
-                    self._save_profile_photo(frames, student.student_code)
-                    
-                    cache_manager.add_student_to_cache(
-                        student_id=student_id,
-                        student_code=student.student_code,
-                        full_name=student.full_name,
-                        class_id=student.class_id or 0,
-                        class_name=student.class_name or "",
-                        embedding=embedding,
-                    )
-                    logger.success(f"✅ [Background] Cập nhật AI xong cho: {student.full_name}")
-                else:
-                    logger.error(f"❌ [Background] Nhận diện thất bại hoặc không đủ ảnh hợp lệ cho {student.full_name}")
-            except Exception as e:
-                logger.error(f"❌ [Background] Lỗi trích xuất Vector: {e}")
+        try:
+            logger.info(f"⚙️ Tính embedding cho [{student.student_code}] từ {len(frames)} ảnh...")
+            
+            # --- KIỂM TRA ĐỊNH DẠNG ẢNH ---
+            if len(frames) > 0:
+                logger.info(f"🔎 Định dạng ảnh đang truyền vào AI: {type(frames[0])}")
+            # -------------------------------
 
-        threading.Thread(target=_extract_bg, daemon=True).start()
+            embedding, avg_score, valid_count = face_engine.compute_enrollment_embedding(frames)
+            
+            if embedding is not None and valid_count >= ai_config.min_enroll_photos:
+                embedding_repo.save_embedding(
+                    student_id=student_id,
+                    embedding=embedding,
+                    model_version="buffalo_l",
+                )
+                student_repo.update_enrollment_status(student_id, enrolled=True)
+                self._save_profile_photo(frames, student.student_code)
+                
+                cache_manager.add_student_to_cache(
+                    student_id=student_id,
+                    student_code=student.student_code,
+                    full_name=student.full_name,
+                    class_id=student.class_id or 0,
+                    class_name=student.class_name or "",
+                    embedding=embedding,
+                )
+                logger.success(f"✅ Cập nhật AI xong cho: {student.full_name}")
+                
+                with self._lock:
+                    self._capture    = None
+                    self._student_id = None
 
-        with self._lock:
-            self._capture    = None
-            self._student_id = None
-
-        result = EnrollmentResult(
-            success=True,
-            student_id=student_id,
-            student_code=student.student_code,
-            full_name=student.full_name,
-            photos_taken=len(frames),
-            photos_valid=len(frames),
-            avg_det_score=1.0,
-        )
-        logger.success(result.summary)
-        return result
+                result = EnrollmentResult(
+                    success=True,
+                    student_id=student_id,
+                    student_code=student.student_code,
+                    full_name=student.full_name,
+                    photos_taken=len(frames),
+                    photos_valid=valid_count,
+                    avg_det_score=avg_score,
+                )
+                logger.success(result.summary)
+                return result
+            else:
+                logger.error(f"❌ Nhận diện thất bại hoặc không đủ ảnh hợp lệ cho {student.full_name}")
+                return EnrollmentResult(
+                    success=False,
+                    student_id=student_id,
+                    student_code=student.student_code,
+                    full_name=student.full_name,
+                    photos_taken=len(frames),
+                    photos_valid=valid_count if valid_count else 0,
+                    avg_det_score=avg_score if avg_score else 0,
+                    error_msg="Khuôn mặt không đạt chuẩn AI. Vui lòng chụp lại với ánh sáng tốt hơn!"
+                )
+        except Exception as e:
+            import traceback
+            logger.error(f"❌ LỖI HỆ THỐNG TRONG QUÁ TRÌNH LƯU AI: {e}\n{traceback.format_exc()}")
+            return EnrollmentResult(
+                success=False,
+                student_id=student_id,
+                student_code=student.student_code,
+                full_name=student.full_name,
+                photos_taken=len(frames),
+                photos_valid=0,
+                avg_det_score=0,
+                error_msg=f"Lỗi hệ thống: {str(e)}"
+            )
 
     def reenroll_student(self, student_id: int, frames: list[np.ndarray]) -> EnrollmentResult:
         self.start_capture(student_id, photo_count=len(frames))
