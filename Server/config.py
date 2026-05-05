@@ -28,7 +28,7 @@ for _dir in [MODELS_DIR, SNAPSHOTS_DIR, LOGS_DIR, REPORTS_DIR]:
 class DatabaseConfig:
     host:     str = os.getenv("DB_HOST", "localhost")
     port:     int = int(os.getenv("DB_PORT", "3306"))
-    database: str = os.getenv("DB_NAME", "faceattendancedb")
+    database: str = os.getenv("DB_NAME", "qlsv")
     username: str = os.getenv("DB_USER", "root")
     password: str = os.getenv("DB_PASS", "Quockhai@24092003")
 

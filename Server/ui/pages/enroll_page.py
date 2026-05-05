@@ -448,9 +448,9 @@ class EnrollPage(QWidget):
         g_idx = self._cmb_gender.findText(student.gender or "Nam")
         if g_idx >= 0: self._cmb_gender.setCurrentIndex(g_idx)
 
-        # 4. Set Class
+        # 4. Set Class (class_id = IDLop dạng VARCHAR)
         for i in range(self._cmb_class.count()):
-            if self._cmb_class.itemData(i) == student.class_id:
+            if str(self._cmb_class.itemData(i)) == str(student.class_id or ""):
                 self._cmb_class.setCurrentIndex(i)
                 break
 
@@ -592,20 +592,14 @@ class EnrollPage(QWidget):
         self._cmb_floor.blockSignals(True)
         self._cmb_floor.clear()
         self._cmb_floor.addItem("-- Tầng --")
-        
-        if building in getattr(self, "_class_mapping", {}):
-            floors = sorted(self._class_mapping[building].keys())
-            if floors:
-                self._cmb_floor.addItems(floors)
-        else:
+        if building and building != "-- Chọn Mini PC --":
             self._cmb_floor.addItems(["Tầng 1", "Tầng 2", "Tầng 3", "Tầng 4", "Tầng 5"])
-        
         self._cmb_floor.blockSignals(False)
         self._on_floor_changed(self._cmb_floor.currentText())
 
     def _on_floor_changed(self, floor: str):
-        self._load_classes()
         self._load_rooms(floor)
+        self._load_classes()
 
     def _load_rooms(self, floor: str):
         current_room = self._cmb_room.currentText()
@@ -628,33 +622,24 @@ class EnrollPage(QWidget):
         self._cmb_room.blockSignals(False)
 
     def _load_classes(self):
-        current_class_name = self._cmb_class.currentText()
+        """Load tất cả lớp từ bảng lop (IDLop → class_id, TenLop → class_name)."""
+        current_class_id = self._cmb_class.currentData()
         self._cmb_class.blockSignals(True)
         self._cmb_class.clear()
         self._cmb_class.addItem("-- Lớp --", None)
-        
-        building = self._cmb_building.currentText()
-        floor = self._cmb_floor.currentText()
-        
-        if building == "-- Chọn Mini PC (Tòa) --" or floor == "-- Tầng --":
-            self._cmb_class.blockSignals(False)
-            return
-        
-        allowed_classes = None
-        if building in getattr(self, "_class_mapping", {}) and floor in self._class_mapping[building]:
-            allowed_classes = self._class_mapping[building][floor]
 
         try:
             from database.repositories import class_repo
             for cls in class_repo.get_all():
-                if allowed_classes is None or cls.class_name in allowed_classes:
-                    self._cmb_class.addItem(cls.class_name, cls.class_id)
-                    
+                # cls.class_id = IDLop (VARCHAR), cls.class_name = TenLop
+                self._cmb_class.addItem(cls.class_name, cls.class_id)
+
             # Khôi phục lựa chọn cũ nếu có
-            if current_class_name:
-                idx = self._cmb_class.findText(current_class_name)
-                if idx >= 0:
-                    self._cmb_class.setCurrentIndex(idx)
+            if current_class_id is not None:
+                for i in range(self._cmb_class.count()):
+                    if str(self._cmb_class.itemData(i)) == str(current_class_id):
+                        self._cmb_class.setCurrentIndex(i)
+                        break
         except Exception as e:
             logger.warning(f"Không load được danh sách lớp: {e}")
         finally:

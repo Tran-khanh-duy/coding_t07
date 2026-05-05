@@ -8,9 +8,9 @@ import numpy as np
 # ─────────────────────────────────────────────
 @dataclass
 class Class:
-    class_id:      int
-    class_code:    str
-    class_name:    str
+    class_id:      str               # IDLop — VARCHAR trong bảng lop
+    class_code:    str               # IDLop (alias)
+    class_name:    str               # TenLop
     teacher_name:  Optional[str]      = None
     academic_year: Optional[str]      = None
     is_active:     bool               = True

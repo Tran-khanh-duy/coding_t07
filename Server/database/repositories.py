@@ -1,4 +1,7 @@
 #database/repositories.py
+# Kết nối với database qlsv:
+#   lop(IDLop, TenLop)
+#   hocvien(id AUTO_INC, MaHV, HoTen, GioiTinh, SoDienThoai, IDLop, face_enrolled, ...)
 import numpy as np
 from datetime import datetime, date
 from typing import Optional
@@ -12,149 +15,160 @@ from .models import (
 
 
 # ══════════════════════════════════════════════
-#  CLASS REPOSITORY
+#  CLASS REPOSITORY  (bảng: lop)
 # ══════════════════════════════════════════════
 class ClassRepository:
+    # IDLop dùng làm cả class_id lẫn class_code; TenLop → class_name
     _SQL = """
-        SELECT class_id, class_code, class_name, teacher_name,
-               academic_year, is_active, created_at
-        FROM Classes
+        SELECT IDLop, IDLop, TenLop, NULL, NULL, 1, NULL
+        FROM lop
     """
 
     def get_all(self, active_only: bool = True) -> list:
-        if active_only:
-            rows = get_db().execute(f"{self._SQL} WHERE is_active = 1 ORDER BY class_name")
-        else:
-            rows = get_db().execute(f"{self._SQL} ORDER BY class_name")
+        rows = get_db().execute(f"{self._SQL} ORDER BY TenLop")
         return [Class(*r) for r in rows]
 
-    def get_by_id(self, class_id: int) -> Optional[Class]:
-        rows = get_db().execute(f"{self._SQL} WHERE class_id = ?", (class_id,))
+    def get_by_id(self, class_id) -> Optional[Class]:
+        rows = get_db().execute(
+            f"{self._SQL} WHERE IDLop = ?", (class_id,)
+        )
         return Class(*rows[0]) if rows else None
 
     def create(self, class_code: str, class_name: str,
                teacher_name: str = None, academic_year: str = None) -> int:
-        cid = get_db().execute_insert(
-            """
-            INSERT INTO Classes (class_code, class_name, teacher_name, academic_year)
-            VALUES (?, ?, ?, ?)
-            """,
-            (class_code, class_name, teacher_name, academic_year)
+        get_db().execute(
+            "INSERT INTO lop (IDLop, TenLop) VALUES (?, ?)",
+            (class_code, class_name), commit=True,
         )
-        logger.info(f"Created class [{class_code}] id={cid}")
-        return cid
+        logger.info(f"Created lop [{class_code}] {class_name}")
+        return class_code  # IDLop là VARCHAR
 
-    def update(self, class_id: int, **kwargs) -> bool:
-        allowed = {"class_name", "teacher_name", "academic_year", "is_active"}
-        cols = {k: v for k, v in kwargs.items() if k in allowed}
+    def update(self, class_id, **kwargs) -> bool:
+        allowed = {"TenLop": "class_name"}
+        cols = {}
+        if "class_name" in kwargs:
+            cols["TenLop"] = kwargs["class_name"]
         if not cols:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in cols)
         params = list(cols.values()) + [class_id]
         get_db().execute(
-            f"UPDATE Classes SET {set_clause} WHERE class_id = ?",
+            f"UPDATE lop SET {set_clause} WHERE IDLop = ?",
             tuple(params), commit=True,
         )
         return True
 
 
 # ══════════════════════════════════════════════
-#  STUDENT REPOSITORY
+#  STUDENT REPOSITORY  (bảng: hocvien)
 # ══════════════════════════════════════════════
 class StudentRepository:
-    # 11 cols: 10 từ bảng + class_name từ JOIN
-    # Thứ tự PHẢI khớp với Student dataclass
+    # 14 cols theo thứ tự Student dataclass:
+    #  student_id, student_code, full_name, gender, date_of_birth,
+    #  phone, email, class_id, class_name, building, floor, room,
+    #  face_enrolled, created_at
     _SQL = """
-        SELECT s.student_id, s.student_code, s.full_name,
-               s.gender, s.date_of_birth,
-               s.phone, s.email, s.class_id,
-               IFNULL(s.class_name, c.class_name), s.building, s.floor, s.room,
-               s.face_enrolled, s.created_at
-        FROM Students s
-        LEFT JOIN Classes c ON c.class_id = s.class_id
+        SELECT hv.id, hv.MaHV, hv.HoTen,
+               hv.GioiTinh, hv.date_of_birth,
+               hv.SoDienThoai, hv.email, hv.IDLop,
+               l.TenLop, hv.building, hv.floor, hv.room,
+               hv.face_enrolled, hv.created_at
+        FROM hocvien hv
+        LEFT JOIN lop l ON l.IDLop = hv.IDLop
     """
 
-    def get_all(self, class_id: int = None) -> list:
-        where_parts = []
-        params = []
+    def get_all(self, class_id=None) -> list:
+        where_parts, params = [], []
         if class_id is not None:
-            where_parts.append("s.class_id = ?")
+            where_parts.append("hv.IDLop = ?")
             params.append(class_id)
         where = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
-        sql   = f"{self._SQL} {where} ORDER BY s.full_name"
-        rows  = get_db().execute(sql, tuple(params) if params else None)
+        rows = get_db().execute(
+            f"{self._SQL} {where} ORDER BY hv.HoTen",
+            tuple(params) if params else None,
+        )
         return [Student(*r) for r in rows]
 
     def get_by_id(self, student_id: int) -> Optional[Student]:
-        rows = get_db().execute(f"{self._SQL} WHERE s.student_id = ?", (student_id,))
+        rows = get_db().execute(
+            f"{self._SQL} WHERE hv.id = ?", (student_id,)
+        )
         return Student(*rows[0]) if rows else None
 
     def get_by_code(self, student_code: str) -> Optional[Student]:
-        rows = get_db().execute(f"{self._SQL} WHERE s.student_code = ?", (student_code,))
+        rows = get_db().execute(
+            f"{self._SQL} WHERE hv.MaHV = ?", (student_code,)
+        )
         return Student(*rows[0]) if rows else None
 
     def create(self, student_code: str, full_name: str,
-               class_id: int = None, gender: str = None,
+               class_id=None, gender: str = None,
                phone: str = None, email: str = None,
                class_name: str = None, building: str = None,
                floor: str = None, room: str = None) -> int:
         sid = get_db().execute_insert(
             """
-            INSERT INTO Students (student_code, full_name, gender, class_id, phone, email, class_name, building, floor, room)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO hocvien (MaHV, HoTen, GioiTinh, IDLop, SoDienThoai, email, building, floor, room)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (student_code, full_name, gender, class_id, phone, email, class_name, building, floor, room)
+            (student_code, full_name, gender, class_id, phone, email, building, floor, room)
         )
-        logger.info(f"Created student [{student_code}] {full_name} id={sid}")
+        logger.info(f"Created hocvien [{student_code}] {full_name} id={sid}")
         return sid
 
     def update(self, student_id: int, **kwargs) -> bool:
-        allowed = {"student_code", "full_name", "gender", "date_of_birth",
-                   "phone", "email", "class_id", "class_name", "building", "floor", "room"}
-        cols = {k: v for k, v in kwargs.items() if k in allowed}
+        # Ánh xạ từ tên field Python → tên cột MySQL
+        col_map = {
+            "student_code":  "MaHV",
+            "full_name":     "HoTen",
+            "gender":        "GioiTinh",
+            "date_of_birth": "date_of_birth",
+            "phone":         "SoDienThoai",
+            "email":         "email",
+            "class_id":      "IDLop",
+            "building":      "building",
+            "floor":         "floor",
+            "room":          "room",
+        }
+        cols = {col_map[k]: v for k, v in kwargs.items() if k in col_map}
         if not cols:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in cols)
         params = list(cols.values()) + [student_id]
         get_db().execute(
-            f"UPDATE Students SET {set_clause} WHERE student_id = ?",
+            f"UPDATE hocvien SET {set_clause} WHERE id = ?",
             tuple(params), commit=True,
         )
         return True
 
     def update_enrollment_status(self, student_id: int, enrolled: bool = True) -> bool:
         get_db().execute(
-            "UPDATE Students SET face_enrolled = ? WHERE student_id = ?",
-            (1 if enrolled else 0, student_id),
-            commit=True,
+            "UPDATE hocvien SET face_enrolled = ? WHERE id = ?",
+            (1 if enrolled else 0, student_id), commit=True,
         )
-        logger.info(f"Student {student_id} face_enrolled → {enrolled}")
+        logger.info(f"hocvien id={student_id} face_enrolled → {enrolled}")
         return True
 
     def search(self, keyword: str) -> list:
-        kw  = f"%{keyword}%"
-        sql = f"""
-            {self._SQL}
-            WHERE s.full_name LIKE ? OR s.student_code LIKE ?
-            ORDER BY s.full_name
-        """
-        rows = get_db().execute(sql, (kw, kw))
+        kw = f"%{keyword}%"
+        rows = get_db().execute(
+            f"{self._SQL} WHERE hv.HoTen LIKE ? OR hv.MaHV LIKE ? ORDER BY hv.HoTen",
+            (kw, kw),
+        )
         return [Student(*r) for r in rows]
 
     def get_student_count_by_camera(self, camera_source: str) -> int:
         db = get_db()
-        # Tìm area_id của camera - ĐÃ SỬA VARCHAR THÀNH CHAR CHO MYSQL
         rows = db.execute(
             "SELECT area_id FROM Cameras WHERE camera_name = ? OR CAST(camera_id AS CHAR) = ? OR rtsp_url = ?",
-            (camera_source, camera_source, camera_source)
+            (camera_source, camera_source, camera_source),
         )
         if rows and rows[0][0]:
             area_id = rows[0][0]
-            parts = area_id.split('_')
+            parts = area_id.split("_")
             bld = parts[0].strip() if len(parts) > 0 else None
             flr = parts[1].strip() if len(parts) > 1 else None
-            
-            query = "SELECT COUNT(*) FROM Students WHERE 1=1"
+            query = "SELECT COUNT(*) FROM hocvien WHERE 1=1"
             params = []
             if bld:
                 query += " AND building = ?"
@@ -162,42 +176,31 @@ class StudentRepository:
             if flr:
                 query += " AND floor = ?"
                 params.append(flr)
-            
             try:
-                count_rows = db.execute(query, tuple(params))
-                return count_rows[0][0] if count_rows else 0
+                return db.execute(query, tuple(params))[0][0]
             except Exception as e:
                 logger.error(f"Lỗi đếm số lượng: {e}")
                 return 0
-                
-        # Nếu camera không có phân khu, hoặc lỗi, lấy toàn bộ
         try:
-            total_rows = db.execute("SELECT COUNT(*) FROM Students")
-            return total_rows[0][0] if total_rows else 0
+            return db.execute("SELECT COUNT(*) FROM hocvien")[0][0]
         except Exception:
             return 0
 
-    def get_count_by_class(self, class_id: int) -> int:
+    def get_count_by_class(self, class_id) -> int:
         rows = get_db().execute(
-            "SELECT COUNT(*) FROM Students WHERE class_id = ?", (class_id,)
+            "SELECT COUNT(*) FROM hocvien WHERE IDLop = ?", (class_id,)
         )
         return rows[0][0] if rows else 0
 
     def delete(self, student_id: int) -> bool:
         try:
             db = get_db()
-            # Xóa lịch sử điểm danh trước để tránh lỗi Foreign Key
             db.execute("DELETE FROM AttendanceRecords WHERE student_id = ?", (student_id,), commit=True)
-            # Xóa dữ liệu khuôn mặt liên quan
             db.execute("DELETE FROM FaceEmbeddings WHERE student_id = ?", (student_id,), commit=True)
-            # Cuối cùng xóa học viên
-            db.execute(
-                "DELETE FROM Students WHERE student_id = ?",
-                (student_id,), commit=True,
-            )
+            db.execute("DELETE FROM hocvien WHERE id = ?", (student_id,), commit=True)
             return True
         except Exception as e:
-            logger.error(f"Cannot delete student {student_id}: {e}")
+            logger.error(f"Cannot delete hocvien id={student_id}: {e}")
             return False
 
 
@@ -208,20 +211,16 @@ class FaceEmbeddingRepository:
 
     def save_embedding(self, student_id: int, embedding: np.ndarray,
                        model_version: str = "buffalo_l") -> bool:
-        """Deactivate cũ → insert mới (đảm bảo unique index)."""
         get_db().execute(
             "UPDATE FaceEmbeddings SET is_active = 0 WHERE student_id = ?",
             (student_id,), commit=True,
         )
         get_db().execute(
-            """
-            INSERT INTO FaceEmbeddings (student_id, embedding_vector, model_version)
-            VALUES (?, ?, ?)
-            """,
+            "INSERT INTO FaceEmbeddings (student_id, embedding_vector, model_version) VALUES (?, ?, ?)",
             (student_id, embedding.astype(np.float32).tobytes(), model_version),
             commit=True,
         )
-        logger.info(f"Saved embedding: student={student_id}")
+        logger.info(f"Saved embedding: student_id={student_id}")
         return True
 
     def save(self, student_id: int, embedding: np.ndarray,
@@ -230,49 +229,44 @@ class FaceEmbeddingRepository:
         rows = get_db().execute(
             "SELECT embedding_id FROM FaceEmbeddings "
             "WHERE student_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1",
-            (student_id,)
+            (student_id,),
         )
         return rows[0][0] if rows else -1
 
     def load_all_to_cache(self) -> EmbeddingCache:
-        """
-        SP sp_GetAllEmbeddings trả về 4 cols:
-            (student_id, student_code, full_name, embedding_vector)
-        """
         rows = get_db().execute(
             """
-            SELECT s.student_id, s.student_code, s.full_name, fe.embedding_vector, s.class_id, c.class_name, c.class_code
+            SELECT hv.id, hv.MaHV, hv.HoTen, fe.embedding_vector,
+                   hv.IDLop, l.TenLop, hv.IDLop
             FROM FaceEmbeddings fe
-            JOIN Students s ON s.student_id = fe.student_id
-            LEFT JOIN Classes c ON c.class_id = s.class_id
+            JOIN hocvien hv ON hv.id = fe.student_id
+            LEFT JOIN lop l ON l.IDLop = hv.IDLop
             WHERE fe.is_active = 1
             ORDER BY fe.student_id
             """
         )
-
         if not rows:
             logger.warning("Không có embedding nào trong database!")
             return EmbeddingCache()
 
         cache = EmbeddingCache()
-        vecs  = []
+        vecs = []
         for row in rows:
             student_id, student_code, full_name, emb_bytes, class_id, class_name, class_code = row[:7]
-            
             vec = np.frombuffer(emb_bytes, dtype=np.float32).copy()
             if vec.shape[0] != 512:
-                logger.warning(f"Skip student={student_id}: shape={vec.shape}")
+                logger.warning(f"Skip student_id={student_id}: shape={vec.shape}")
                 continue
             cache.student_ids.append(int(student_id))
             cache.student_codes.append(str(student_code or ""))
             cache.full_names.append(str(full_name or ""))
-            cache.class_ids.append(int(class_id or 0))
+            cache.class_ids.append(str(class_id or ""))
             cache.class_names.append(str(class_name or ""))
             cache.class_codes.append(str(class_code or ""))
             vecs.append(vec)
 
         if vecs:
-            mat   = np.vstack(vecs).astype(np.float32)
+            mat = np.vstack(vecs).astype(np.float32)
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
             cache.embeddings = mat / np.maximum(norms, 1e-8)
 
@@ -286,9 +280,9 @@ class FaceEmbeddingRepository:
         except Exception:
             rows = get_db().execute(
                 """
-                SELECT s.student_id, s.student_code, s.full_name, fe.embedding_vector
+                SELECT hv.id, hv.MaHV, hv.HoTen, fe.embedding_vector
                 FROM FaceEmbeddings fe
-                JOIN Students s ON s.student_id = fe.student_id
+                JOIN hocvien hv ON hv.id = fe.student_id
                 WHERE fe.is_active = 1
                 """
             )
@@ -297,7 +291,7 @@ class FaceEmbeddingRepository:
     def has_embedding(self, student_id: int) -> bool:
         rows = get_db().execute(
             "SELECT COUNT(*) FROM FaceEmbeddings WHERE student_id = ? AND is_active = 1",
-            (student_id,)
+            (student_id,),
         )
         return bool(rows and rows[0][0] > 0)
 
@@ -333,20 +327,16 @@ class CameraRepository:
     def create(self, camera_name: str, location_desc: str = None,
                rtsp_url: str = None, ip_address: str = None,
                resolution: str = "1280x720", area_id: str = None) -> int:
-        cid = get_db().execute_insert(
-            """
-            INSERT INTO Cameras (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id)
+        return get_db().execute_insert(
+            "INSERT INTO Cameras (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id),
         )
-        return cid
 
     def update(self, camera_id: int, **kwargs) -> bool:
         allowed = {"camera_name", "location_desc", "rtsp_url", "ip_address", "resolution", "area_id", "is_active"}
         cols = {k: v for k, v in kwargs.items() if k in allowed}
-        if not cols: return False
-        
+        if not cols:
+            return False
         set_clause = ", ".join(f"{k} = ?" for k in cols)
         params = list(cols.values()) + [camera_id]
         get_db().execute(f"UPDATE Cameras SET {set_clause} WHERE camera_id = ?", tuple(params), commit=True)
@@ -358,10 +348,9 @@ class CameraRepository:
 
 
 # ══════════════════════════════════════════════
-#  SESSION REPOSITORY
+#  SESSION REPOSITORY  (bảng: AttendanceSessions + lop)
 # ══════════════════════════════════════════════
 def _row_to_session(r) -> AttendanceSession:
-    """13 cols: 11 DB + class_name + class_code."""
     return AttendanceSession(
         session_id    = r[0],
         session_code  = r[1],
@@ -378,60 +367,41 @@ def _row_to_session(r) -> AttendanceSession:
         class_code    = r[12] or "",
     )
 
+_SESSION_SQL = """
+    SELECT s.session_id, s.session_code, s.class_id, s.subject_name,
+           s.session_date, s.start_time, s.end_time,
+           s.status, s.present_count, s.absent_count, s.created_at,
+           l.TenLop, l.IDLop
+    FROM AttendanceSessions s
+    LEFT JOIN lop l ON l.IDLop = s.class_id
+"""
+
 
 class SessionRepository:
 
     def get_all(self, limit: int = 200) -> list:
         rows = get_db().execute(
-            """
-            SELECT s.session_id, s.session_code, s.class_id, s.subject_name,
-                   s.session_date, s.start_time, s.end_time,
-                   s.status, s.present_count, s.absent_count, s.created_at,
-                   c.class_name, c.class_code
-            FROM AttendanceSessions s
-            LEFT JOIN Classes c ON c.class_id = s.class_id
-            ORDER BY s.session_id DESC LIMIT ?
-            """,
-            (limit,)
+            f"{_SESSION_SQL} ORDER BY s.session_id DESC LIMIT ?", (limit,)
         )
         return [_row_to_session(r) for r in rows]
 
     def get_by_id(self, session_id: int) -> Optional[AttendanceSession]:
         rows = get_db().execute(
-            """
-            SELECT s.session_id, s.session_code, s.class_id, s.subject_name,
-                   s.session_date, s.start_time, s.end_time,
-                   s.status, s.present_count, s.absent_count, s.created_at,
-                   c.class_name, c.class_code
-            FROM AttendanceSessions s
-            LEFT JOIN Classes c ON c.class_id = s.class_id
-            WHERE s.session_id = ?
-            """,
-            (session_id,)
+            f"{_SESSION_SQL} WHERE s.session_id = ?", (session_id,)
         )
         return _row_to_session(rows[0]) if rows else None
 
     def get_recent(self, limit: int = 20) -> list:
         rows = get_db().execute(
-            """
-            SELECT s.session_id, s.session_code, s.class_id, s.subject_name,
-                   s.session_date, s.start_time, s.end_time,
-                   s.status, s.present_count, s.absent_count, s.created_at,
-                   c.class_name, c.class_code
-            FROM AttendanceSessions s
-            LEFT JOIN Classes c ON c.class_id = s.class_id
-            ORDER BY s.session_id DESC LIMIT ?
-            """,
-            (limit,)
+            f"{_SESSION_SQL} ORDER BY s.session_id DESC LIMIT ?", (limit,)
         )
         return [_row_to_session(r) for r in rows]
 
-    def create(self, class_id: int, subject_name: str,
+    def create(self, class_id, subject_name: str,
                session_date=None, created_by: str = None) -> int:
         return self.create_session(class_id, subject_name, session_date)
 
-    def create_session(self, class_id: int, subject_name: str,
-                       session_date=None) -> int:
+    def create_session(self, class_id, subject_name: str, session_date=None) -> int:
         if session_date is None:
             session_date = date.today()
         session_code = (
@@ -444,54 +414,33 @@ class SessionRepository:
                 (session_code, class_id, subject_name, session_date, status)
             VALUES (?, ?, ?, ?, 'PENDING')
             """,
-            (session_code, class_id, subject_name, session_date)
+            (session_code, class_id, subject_name, session_date),
         )
         if session_id > 0:
             self._prefill_absent(session_id, class_id)
         logger.info(f"Created session: {session_code} (id={session_id})")
         return session_id
 
-    def _prefill_absent(self, session_id: int, class_id: int):
-        # Kiểm tra xem class_id này có phải là lớp GLOBAL (Toàn trường) không
-        is_global = False
-        try:
-            rows = get_db().execute("SELECT class_code FROM Classes WHERE class_id = ?", (class_id,))
-            if rows and rows[0][0] == 'GLOBAL':
-                is_global = True
-        except Exception as e:
-            logger.error(f"Lỗi kiểm tra GLOBAL: {e}")
-
-        if is_global:
-            # Lớp Toàn trường -> chèn tất cả học viên
-            get_db().execute(
-                """
-                INSERT INTO AttendanceRecords (session_id, student_id, status)
-                SELECT ?, student_id, 'ABSENT' FROM Students
-                """,
-                (session_id,), commit=True,
-            )
-        else:
-            # Lớp cụ thể -> chèn học viên thuộc lớp đó
-            get_db().execute(
-                """
-                INSERT INTO AttendanceRecords (session_id, student_id, status)
-                SELECT ?, student_id, 'ABSENT' FROM Students WHERE class_id = ?
-                """,
-                (session_id, class_id), commit=True,
-            )
+    def _prefill_absent(self, session_id: int, class_id):
+        # Chèn tất cả học viên thuộc lớp vào bảng điểm danh với trạng thái ABSENT
+        get_db().execute(
+            """
+            INSERT INTO AttendanceRecords (session_id, student_id, status)
+            SELECT ?, hv.id, 'ABSENT' FROM hocvien hv WHERE hv.IDLop = ?
+            """,
+            (session_id, class_id), commit=True,
+        )
 
     def start_session(self, session_id: int) -> bool:
-        # Tự động kết thúc các session ACTIVE khác để tránh xung đột
         get_db().execute(
             "UPDATE AttendanceSessions SET status='COMPLETED', end_time=? WHERE status='ACTIVE' AND session_id != ?",
-            (datetime.now(), session_id), commit=True
+            (datetime.now(), session_id), commit=True,
         )
-        # Kích hoạt session hiện tại
         get_db().execute(
             "UPDATE AttendanceSessions SET status='ACTIVE', start_time=? WHERE session_id=?",
             (datetime.now(), session_id), commit=True,
         )
-        logger.info(f"Session {session_id} → ACTIVE (Các phiên khác đã đóng)")
+        logger.info(f"Session {session_id} → ACTIVE")
         return True
 
     def end_session(self, session_id: int) -> bool:
@@ -499,10 +448,8 @@ class SessionRepository:
             """
             UPDATE AttendanceSessions SET
                 status        = 'COMPLETED', end_time = ?,
-                present_count = (SELECT COUNT(*) FROM AttendanceRecords
-                                 WHERE session_id = ? AND status = 'PRESENT'),
-                absent_count  = (SELECT COUNT(*) FROM AttendanceRecords
-                                 WHERE session_id = ? AND status = 'ABSENT')
+                present_count = (SELECT COUNT(*) FROM AttendanceRecords WHERE session_id = ? AND status = 'PRESENT'),
+                absent_count  = (SELECT COUNT(*) FROM AttendanceRecords WHERE session_id = ? AND status = 'ABSENT')
             WHERE session_id = ?
             """,
             (datetime.now(), session_id, session_id, session_id), commit=True,
@@ -522,14 +469,14 @@ class SessionRepository:
             """
             UPDATE AttendanceSessions
             SET present_count = (
-                SELECT COUNT(*) FROM AttendanceRecords
-                WHERE session_id = ? AND status = 'PRESENT'
-            )
-            WHERE session_id = ?
+                SELECT COUNT(*) FROM AttendanceRecords WHERE session_id = ? AND status = 'PRESENT'
+            ) WHERE session_id = ?
             """,
             (session_id, session_id), commit=True,
         )
-        rows = get_db().execute("SELECT present_count FROM AttendanceSessions WHERE session_id = ?", (session_id,))
+        rows = get_db().execute(
+            "SELECT present_count FROM AttendanceSessions WHERE session_id = ?", (session_id,)
+        )
         return rows[0][0] if rows else 0
 
 
@@ -542,55 +489,35 @@ class AttendanceRecordRepository:
                           recognition_score: float,
                           snapshot_path: str = None,
                           camera_id: int = None) -> bool:
-        """Ghi nhận điểm danh. Nếu học viên chưa có trong phiên, tự thêm trước."""
         try:
-            from datetime import datetime
             now = datetime.now()
-
-            # Đảm bảo học viên đã có dòng trong phiên (tự chèn ABSENT nếu chưa có)
             existing = get_db().execute(
                 "SELECT 1 FROM AttendanceRecords WHERE session_id=? AND student_id=?",
-                (session_id, student_id)
+                (session_id, student_id),
             )
             if not existing:
                 get_db().execute(
                     "INSERT INTO AttendanceRecords (session_id, student_id, status) VALUES (?, ?, 'ABSENT')",
                     (session_id, student_id), commit=True,
                 )
-
-            # Cập nhật thành PRESENT
             rid = self.upsert(
-                session_id=session_id,
-                student_id=student_id,
-                status="PRESENT",
-                check_in_time=now,
+                session_id=session_id, student_id=student_id,
+                status="PRESENT", check_in_time=now,
                 recognition_score=recognition_score,
             )
-
             if rid < 0:
-                logger.error(f"record_attendance: upsert trả về -1 (s={session_id} u={student_id})")
+                logger.error(f"record_attendance: upsert failed s={session_id} u={student_id}")
                 return False
-
-            # Cập nhật present_count trong session
             get_db().execute(
                 """
                 UPDATE AttendanceSessions
                 SET present_count = (
-                    SELECT COUNT(*) FROM AttendanceRecords
-                    WHERE session_id = ? AND status = 'PRESENT'
+                    SELECT COUNT(*) FROM AttendanceRecords WHERE session_id = ? AND status = 'PRESENT'
                 ) WHERE session_id = ?
                 """,
                 (session_id, session_id), commit=True,
             )
-            
-            # Kiểm tra lại DB thực tế
-            check_rows = get_db().execute(
-                "SELECT status FROM AttendanceRecords WHERE session_id=? AND student_id=?",
-                (session_id, student_id)
-            )
-            db_status = check_rows[0][0] if check_rows else "NOT FOUND"
-            
-            logger.success(f"✅ record_attendance OK: s={session_id} u={student_id} | DB_STATUS={db_status}")
+            logger.success(f"✅ record_attendance OK: s={session_id} u={student_id}")
             return True
         except Exception as e:
             logger.error(f"record_attendance error: {e}")
@@ -599,15 +526,12 @@ class AttendanceRecordRepository:
     def upsert(self, session_id: int, student_id: int,
                status: str, check_in_time=None,
                recognition_score: float = 0) -> int:
-        # Sử dụng chuẩn SQL tường minh cho MySQL 8 (không dùng VALUES() deprecated)
         get_db().execute(
             """
             INSERT INTO AttendanceRecords (session_id, student_id, status, check_in_time, recognition_score)
             VALUES (?, ?, ?, ?, ?)
-            ON DUPLICATE KEY UPDATE 
-                status = ?, 
-                check_in_time = ?, 
-                recognition_score = ?
+            ON DUPLICATE KEY UPDATE
+                status = ?, check_in_time = ?, recognition_score = ?
             """,
             (session_id, student_id, status, check_in_time, recognition_score,
              status, check_in_time, recognition_score),
@@ -615,66 +539,68 @@ class AttendanceRecordRepository:
         )
         rows = get_db().execute(
             "SELECT record_id FROM AttendanceRecords WHERE session_id=? AND student_id=?",
-            (session_id, student_id)
+            (session_id, student_id),
         )
         return rows[0][0] if rows else -1
 
     def get_session_report(self, session_id: int) -> list:
         rows = get_db().execute(
             """
-            SELECT s.student_code, s.full_name, c.class_name,
+            SELECT hv.MaHV, hv.HoTen, l.TenLop,
                    ar.status, ar.check_in_time, ar.recognition_score,
-                   ar.snapshot_path, s.gender, ar.camera_id, s.student_id,
-                   s.building, s.room
+                   ar.snapshot_path, hv.GioiTinh, ar.camera_id, hv.id,
+                   hv.building, hv.room
             FROM AttendanceRecords ar
-            INNER JOIN Students s ON s.student_id = ar.student_id
-            LEFT  JOIN Classes  c ON c.class_id   = s.class_id
+            INNER JOIN hocvien hv ON hv.id    = ar.student_id
+            LEFT  JOIN lop     l  ON l.IDLop  = hv.IDLop
             WHERE ar.session_id = ?
-            ORDER BY c.class_name, ar.status DESC, ar.check_in_time
+            ORDER BY l.TenLop, ar.status DESC, ar.check_in_time
             """,
-            (session_id,)
+            (session_id,),
         )
         result = []
         for r in rows:
             t = r[4]
             time_str = t.strftime("%H:%M:%S") if hasattr(t, "strftime") else str(t or "")
             result.append({
-                "student_code":      r[0] or "",
-                "full_name":         r[1] or "",
-                "class_name":        r[2] or "Khác",
-                "status":            r[3] or "ABSENT",
-                "check_in_time":     time_str,
-                "recognition_score": float(r[5] or 0),
+                "student_code":       r[0] or "",
+                "full_name":          r[1] or "",
+                "class_name":         r[2] or "Khác",
+                "status":             r[3] or "ABSENT",
+                "check_in_time":      time_str,
+                "recognition_score":  float(r[5] or 0),
                 "recognition_method": "FACE",
-                "gender":            r[7] or "",
-                "camera_id":         r[8] or 1,
-                "student_id":        r[9] or 0,
-                "building":          r[10] or "",
-                "room":              r[11] or "",
+                "gender":             r[7] or "",
+                "camera_id":          r[8] or 1,
+                "student_id":         r[9] or 0,
+                "building":           r[10] or "",
+                "room":               r[11] or "",
             })
         return result
 
     def is_already_recorded(self, session_id: int, student_id: int) -> bool:
         rows = get_db().execute(
             "SELECT status FROM AttendanceRecords WHERE session_id=? AND student_id=?",
-            (session_id, student_id)
+            (session_id, student_id),
         )
         return bool(rows and rows[0][0] == "PRESENT")
 
     def get_present_list(self, session_id: int) -> list:
         rows = get_db().execute(
             """
-            SELECT s.student_code, s.full_name, ar.check_in_time, ar.recognition_score,
-                   IFNULL(c.class_code, IFNULL(s.class_name, '')) AS class_code
+            SELECT hv.MaHV, hv.HoTen, ar.check_in_time, ar.recognition_score, l.IDLop
             FROM AttendanceRecords ar
-            INNER JOIN Students s ON s.student_id = ar.student_id
-            LEFT JOIN Classes c ON c.class_id = s.class_id
+            INNER JOIN hocvien hv ON hv.id   = ar.student_id
+            LEFT  JOIN lop     l  ON l.IDLop = hv.IDLop
             WHERE ar.session_id = ? AND ar.status = 'PRESENT'
             ORDER BY ar.check_in_time
             """,
-            (session_id,)
+            (session_id,),
         )
-        return [{"code": r[0], "name": r[1], "time": r[2], "score": float(r[3] or 0), "class_code": r[4]} for r in rows]
+        return [
+            {"code": r[0], "name": r[1], "time": r[2], "score": float(r[3] or 0), "class_code": r[4]}
+            for r in rows
+        ]
 
 
 # ─────────────────────────────────────────────

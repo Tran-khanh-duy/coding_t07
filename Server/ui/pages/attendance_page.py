@@ -550,6 +550,16 @@ class AttendancePage(QWidget):
 
         self._refresh_cameras()
 
+        # ── Chọn lớp (từ bảng lop trong qlsv) ──
+        class_lbl = QLabel("Lớp học")
+        class_lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; border: none; background: transparent; padding-top: 6px;")
+        self._cmb_session_class = QComboBox()
+        self._cmb_session_class.setStyleSheet(combo_style())
+        self._cmb_session_class.setPlaceholderText("-- Chọn lớp --")
+        sc_layout.addWidget(class_lbl)
+        sc_layout.addWidget(self._cmb_session_class)
+        self._load_session_classes()
+
         # Buổi học
         subj_lbl = QLabel("Buổi học")
         subj_lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; border: none; background: transparent; padding-top: 6px;")
@@ -562,7 +572,7 @@ class AttendancePage(QWidget):
         ])
         self._inp_subject.setStyleSheet(combo_style())
         self._auto_select_session()
-        
+
         # Ngày
         self._date_picker = QDateEdit()
         self._date_picker.setDate(QDate.currentDate())
@@ -588,11 +598,11 @@ class AttendancePage(QWidget):
                 margin-right: 10px;
             }}
         """)
-        
+
         row_dt = QHBoxLayout()
         row_dt.addWidget(self._inp_subject, 3)
         row_dt.addWidget(self._date_picker, 2)
-        
+
         sc_layout.addWidget(subj_lbl)
         sc_layout.addLayout(row_dt)
         sc_layout.addStretch()
@@ -843,75 +853,28 @@ class AttendancePage(QWidget):
             logger.error(f"Error refreshing cameras: {e}")
 
 
+    def _load_session_classes(self):
+        """Load danh sách lớp từ bảng lop vào ComboBox chọn lớp điểm danh."""
+        self._cmb_session_class.clear()
+        self._cmb_session_class.addItem("-- Chọn lớp --", None)
+        try:
+            from database.repositories import class_repo
+            for cls in class_repo.get_all():
+                # cls.class_id = IDLop (VARCHAR), cls.class_name = TenLop
+                self._cmb_session_class.addItem(cls.class_name, cls.class_id)
+        except Exception as e:
+            logger.warning(f"Không load được danh sách lớp: {e}")
+
     def _start_session(self):
+        # ── Lấy lớp đã chọn (IDLop từ bảng lop) ──
+        class_id = self._cmb_session_class.currentData()
+        if not class_id:
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng chọn lớp học trước khi bắt đầu điểm danh!")
+            return
+
         camera_source = self._selected_camera_source
         qdate = self._date_picker.date()
         session_date = date(qdate.year(), qdate.month(), qdate.day())
-
-        try:
-            from database.connection import get_db
-            from loguru import logger
-            db = get_db()
-            
-            # --- ĐOẠN ĐÃ SỬA LỖI ---
-            # 1. MySQL không dùng 'IF NOT EXISTS' trực tiếp trong INSERT.
-            # 2. db.execute() trả về một list, vì vậy chúng ta kiểm tra độ dài list thay vì dùng .fetchone().
-            # 3. Sử dụng %s cho MySQL placeholder thay vì ?.
-            
-            check_sql = "SELECT class_id FROM Classes WHERE class_code = 'GLOBAL' LIMIT 1"
-            
-            # Thực thi câu lệnh kiểm tra
-            rows = db.execute(check_sql)
-            
-            # Lấy dòng đầu tiên nếu list không rỗng
-            res = rows[0] if rows and len(rows) > 0 else None
-            
-            if not res:
-                # Bước 2: Nếu chưa có thì mới Insert
-                logger.info("Không tìm thấy lớp GLOBAL, đang tạo mới...")
-                db.execute(
-                    "INSERT INTO Classes (class_code, class_name) VALUES ('GLOBAL', %s)", 
-                    ("Toàn trường",), 
-                    commit=True
-                )
-                # Truy vấn lại để lấy class_id sau khi chèn
-                rows = db.execute(check_sql)
-                res = rows[0] if rows and len(rows) > 0 else None
-            
-            # Trích xuất class_id từ kết quả (xử lý cả dạng tuple hoặc dict)
-            if res:
-                if isinstance(res, (list, tuple)):
-                    class_id = res[0]
-                else:
-                    class_id = res.get('class_id')
-            else:
-                class_id = None
-
-            # --- KẾT THÚC ĐOẠN SỬA ---
-
-            # Nếu vẫn không lấy được class_id, thử tìm theo tên hoặc lấy đại diện
-            if not class_id:
-                from database.repositories import class_repo
-                classes = class_repo.get_all()
-                target_class = next((c for c in classes if c.class_name == "Toàn trường"), None)
-                
-                if target_class:
-                    class_id = target_class.class_id
-                elif classes:
-                    class_id = classes[0].class_id
-                else:
-                    QMessageBox.warning(self, "Lỗi", "Chưa có danh mục Lớp Học nào trong CSDL!")
-                    return
-            
-            # Đảm bảo class_id là kiểu số nguyên
-            class_id = int(class_id)
-
-        except Exception as e:
-            logger.error(f"Lỗi xử lý Lớp học: {e}")
-            # Fallback về 1 ID an toàn nếu bạn chắc chắn nó tồn tại, 
-            # nhưng tốt nhất là nên để lỗi để tránh sai lệch dữ liệu khóa ngoại
-            QMessageBox.critical(self, "Lỗi Cấu Hình", f"Không tìm thấy ID lớp phù hợp: {e}")
-            return
 
         try:
             from services.attendance_service import attendance_service
@@ -961,9 +924,10 @@ class AttendancePage(QWidget):
 
             self._btn_start.hide()
             self._btn_stop.show()
-            self._btn_camera_select.setEnabled(True) 
+            self._btn_camera_select.setEnabled(True)
             self._inp_subject.setEnabled(False)
             self._date_picker.setEnabled(False)
+            self._cmb_session_class.setEnabled(False)
             
             self._set_cam_status("● Đang điểm danh", Colors.GREEN)
             self._stat_present.setText("0")
@@ -1020,6 +984,8 @@ class AttendancePage(QWidget):
         self._btn_camera_select.setEnabled(True)
         self._inp_subject.setEnabled(True)
         self._date_picker.setEnabled(True)
+        self._cmb_session_class.setEnabled(True)
+        self._load_session_classes()
         self._camera_view.clear()
         
         self._cam_stack.setCurrentIndex(0)
@@ -1148,4 +1114,5 @@ class AttendancePage(QWidget):
     def showEvent(self, event):
         if self._worker and self._worker._paused: self._worker.resume()
         self._refresh_cameras()
+        self._load_session_classes()
         super().showEvent(event)

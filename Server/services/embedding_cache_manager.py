@@ -118,7 +118,7 @@ class EmbeddingCacheManager:
     # ─── Thêm/Xóa học viên vào cache ngay lập tức ─
 
     def add_student_to_cache(self, student_id: int, student_code: str,
-                              full_name: str, class_id: int, class_name: str,
+                              full_name: str, class_id, class_name: str,
                               embedding) -> bool:
         """
         Thêm 1 học viên vào cache mà không cần reload toàn bộ.
