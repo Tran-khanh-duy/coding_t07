@@ -13,8 +13,8 @@ PyQt6==6.6.1
 PyQt6-Qt6==6.6.1
 PyQt6-sip==13.6.0
 
-# --- Database (SQL Server) ---
-pyodbc==5.0.1
+# --- Database (MySQL) ---
+mysql-connector-python>=9.0.0
 sqlalchemy==2.0.23
 
 # --- Reports & Data ---

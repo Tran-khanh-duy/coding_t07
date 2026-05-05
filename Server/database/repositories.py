@@ -34,15 +34,13 @@ class ClassRepository:
 
     def create(self, class_code: str, class_name: str,
                teacher_name: str = None, academic_year: str = None) -> int:
-        rows = get_db().execute(
+        cid = get_db().execute_insert(
             """
             INSERT INTO Classes (class_code, class_name, teacher_name, academic_year)
-            OUTPUT INSERTED.class_id VALUES (?, ?, ?, ?)
+            VALUES (?, ?, ?, ?)
             """,
-            (class_code, class_name, teacher_name, academic_year),
-            commit=True,
+            (class_code, class_name, teacher_name, academic_year)
         )
-        cid = rows[0][0] if rows else -1
         logger.info(f"Created class [{class_code}] id={cid}")
         return cid
 
@@ -70,7 +68,7 @@ class StudentRepository:
         SELECT s.student_id, s.student_code, s.full_name,
                s.gender, s.date_of_birth,
                s.phone, s.email, s.class_id,
-               ISNULL(s.class_name, c.class_name), s.building, s.floor, s.room,
+               IFNULL(s.class_name, c.class_name), s.building, s.floor, s.room,
                s.face_enrolled, s.created_at
         FROM Students s
         LEFT JOIN Classes c ON c.class_id = s.class_id
@@ -100,15 +98,13 @@ class StudentRepository:
                phone: str = None, email: str = None,
                class_name: str = None, building: str = None,
                floor: str = None, room: str = None) -> int:
-        rows = get_db().execute(
+        sid = get_db().execute_insert(
             """
             INSERT INTO Students (student_code, full_name, gender, class_id, phone, email, class_name, building, floor, room)
-            OUTPUT INSERTED.student_id VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (student_code, full_name, gender, class_id, phone, email, class_name, building, floor, room),
-            commit=True,
+            (student_code, full_name, gender, class_id, phone, email, class_name, building, floor, room)
         )
-        sid = rows[0][0] if rows else -1
         logger.info(f"Created student [{student_code}] {full_name} id={sid}")
         return sid
 
@@ -147,9 +143,9 @@ class StudentRepository:
 
     def get_student_count_by_camera(self, camera_source: str) -> int:
         db = get_db()
-        # Tìm area_id của camera
+        # Tìm area_id của camera - ĐÃ SỬA VARCHAR THÀNH CHAR CHO MYSQL
         rows = db.execute(
-            "SELECT area_id FROM Cameras WHERE camera_name = ? OR CAST(camera_id AS VARCHAR) = ? OR rtsp_url = ?",
+            "SELECT area_id FROM Cameras WHERE camera_name = ? OR CAST(camera_id AS CHAR) = ? OR rtsp_url = ?",
             (camera_source, camera_source, camera_source)
         )
         if rows and rows[0][0]:
@@ -172,10 +168,14 @@ class StudentRepository:
                 return count_rows[0][0] if count_rows else 0
             except Exception as e:
                 logger.error(f"Lỗi đếm số lượng: {e}")
+                return 0
                 
         # Nếu camera không có phân khu, hoặc lỗi, lấy toàn bộ
-        total_rows = db.execute("SELECT COUNT(*) FROM Students")
-        return total_rows[0][0] if total_rows else 0
+        try:
+            total_rows = db.execute("SELECT COUNT(*) FROM Students")
+            return total_rows[0][0] if total_rows else 0
+        except Exception:
+            return 0
 
     def get_count_by_class(self, class_id: int) -> int:
         rows = get_db().execute(
@@ -228,8 +228,8 @@ class FaceEmbeddingRepository:
              model_version: str = "buffalo_l") -> int:
         self.save_embedding(student_id, embedding, model_version)
         rows = get_db().execute(
-            "SELECT TOP 1 embedding_id FROM FaceEmbeddings "
-            "WHERE student_id = ? AND is_active = 1 ORDER BY created_at DESC",
+            "SELECT embedding_id FROM FaceEmbeddings "
+            "WHERE student_id = ? AND is_active = 1 ORDER BY created_at DESC LIMIT 1",
             (student_id,)
         )
         return rows[0][0] if rows else -1
@@ -333,15 +333,14 @@ class CameraRepository:
     def create(self, camera_name: str, location_desc: str = None,
                rtsp_url: str = None, ip_address: str = None,
                resolution: str = "1280x720", area_id: str = None) -> int:
-        rows = get_db().execute(
+        cid = get_db().execute_insert(
             """
             INSERT INTO Cameras (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id)
-            OUTPUT INSERTED.camera_id VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id),
-            commit=True,
+            (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id)
         )
-        return rows[0][0] if rows else -1
+        return cid
 
     def update(self, camera_id: int, **kwargs) -> bool:
         allowed = {"camera_name", "location_desc", "rtsp_url", "ip_address", "resolution", "area_id", "is_active"}
@@ -385,13 +384,13 @@ class SessionRepository:
     def get_all(self, limit: int = 200) -> list:
         rows = get_db().execute(
             """
-            SELECT TOP (?) s.session_id, s.session_code, s.class_id, s.subject_name,
+            SELECT s.session_id, s.session_code, s.class_id, s.subject_name,
                    s.session_date, s.start_time, s.end_time,
                    s.status, s.present_count, s.absent_count, s.created_at,
                    c.class_name, c.class_code
             FROM AttendanceSessions s
             LEFT JOIN Classes c ON c.class_id = s.class_id
-            ORDER BY s.session_id DESC
+            ORDER BY s.session_id DESC LIMIT ?
             """,
             (limit,)
         )
@@ -415,13 +414,13 @@ class SessionRepository:
     def get_recent(self, limit: int = 20) -> list:
         rows = get_db().execute(
             """
-            SELECT TOP (?) s.session_id, s.session_code, s.class_id, s.subject_name,
+            SELECT s.session_id, s.session_code, s.class_id, s.subject_name,
                    s.session_date, s.start_time, s.end_time,
                    s.status, s.present_count, s.absent_count, s.created_at,
                    c.class_name, c.class_code
             FROM AttendanceSessions s
             LEFT JOIN Classes c ON c.class_id = s.class_id
-            ORDER BY s.session_id DESC
+            ORDER BY s.session_id DESC LIMIT ?
             """,
             (limit,)
         )
@@ -439,37 +438,60 @@ class SessionRepository:
             f"{class_id}-{session_date.strftime('%Y%m%d')}"
             f"-{datetime.now().strftime('%H%M%S')}"
         )
-        rows = get_db().execute(
+        session_id = get_db().execute_insert(
             """
             INSERT INTO AttendanceSessions
                 (session_code, class_id, subject_name, session_date, status)
-            OUTPUT INSERTED.session_id
             VALUES (?, ?, ?, ?, 'PENDING')
             """,
-            (session_code, class_id, subject_name, session_date),
-            commit=True,
+            (session_code, class_id, subject_name, session_date)
         )
-        session_id = rows[0][0] if rows else -1
         if session_id > 0:
             self._prefill_absent(session_id, class_id)
         logger.info(f"Created session: {session_code} (id={session_id})")
         return session_id
 
     def _prefill_absent(self, session_id: int, class_id: int):
-        get_db().execute(
-            """
-            INSERT INTO AttendanceRecords (session_id, student_id, status)
-            SELECT ?, student_id, 'ABSENT' FROM Students WHERE class_id = ?
-            """,
-            (session_id, class_id), commit=True,
-        )
+        # Kiểm tra xem class_id này có phải là lớp GLOBAL (Toàn trường) không
+        is_global = False
+        try:
+            rows = get_db().execute("SELECT class_code FROM Classes WHERE class_id = ?", (class_id,))
+            if rows and rows[0][0] == 'GLOBAL':
+                is_global = True
+        except Exception as e:
+            logger.error(f"Lỗi kiểm tra GLOBAL: {e}")
+
+        if is_global:
+            # Lớp Toàn trường -> chèn tất cả học viên
+            get_db().execute(
+                """
+                INSERT INTO AttendanceRecords (session_id, student_id, status)
+                SELECT ?, student_id, 'ABSENT' FROM Students
+                """,
+                (session_id,), commit=True,
+            )
+        else:
+            # Lớp cụ thể -> chèn học viên thuộc lớp đó
+            get_db().execute(
+                """
+                INSERT INTO AttendanceRecords (session_id, student_id, status)
+                SELECT ?, student_id, 'ABSENT' FROM Students WHERE class_id = ?
+                """,
+                (session_id, class_id), commit=True,
+            )
 
     def start_session(self, session_id: int) -> bool:
+        # Tự động kết thúc các session ACTIVE khác để tránh xung đột
+        get_db().execute(
+            "UPDATE AttendanceSessions SET status='COMPLETED', end_time=? WHERE status='ACTIVE' AND session_id != ?",
+            (datetime.now(), session_id), commit=True
+        )
+        # Kích hoạt session hiện tại
         get_db().execute(
             "UPDATE AttendanceSessions SET status='ACTIVE', start_time=? WHERE session_id=?",
             (datetime.now(), session_id), commit=True,
         )
-        logger.info(f"Session {session_id} → ACTIVE")
+        logger.info(f"Session {session_id} → ACTIVE (Các phiên khác đã đóng)")
         return True
 
     def end_session(self, session_id: int) -> bool:
@@ -496,18 +518,18 @@ class SessionRepository:
         return True
 
     def update_present_count(self, session_id: int) -> int:
-        rows = get_db().execute(
+        get_db().execute(
             """
             UPDATE AttendanceSessions
             SET present_count = (
                 SELECT COUNT(*) FROM AttendanceRecords
                 WHERE session_id = ? AND status = 'PRESENT'
             )
-            OUTPUT INSERTED.present_count
             WHERE session_id = ?
             """,
             (session_id, session_id), commit=True,
         )
+        rows = get_db().execute("SELECT present_count FROM AttendanceSessions WHERE session_id = ?", (session_id,))
         return rows[0][0] if rows else 0
 
 
@@ -560,7 +582,15 @@ class AttendanceRecordRepository:
                 """,
                 (session_id, session_id), commit=True,
             )
-            logger.success(f"✅ record_attendance OK: s={session_id} u={student_id} score={recognition_score:.3f}")
+            
+            # Kiểm tra lại DB thực tế
+            check_rows = get_db().execute(
+                "SELECT status FROM AttendanceRecords WHERE session_id=? AND student_id=?",
+                (session_id, student_id)
+            )
+            db_status = check_rows[0][0] if check_rows else "NOT FOUND"
+            
+            logger.success(f"✅ record_attendance OK: s={session_id} u={student_id} | DB_STATUS={db_status}")
             return True
         except Exception as e:
             logger.error(f"record_attendance error: {e}")
@@ -569,20 +599,18 @@ class AttendanceRecordRepository:
     def upsert(self, session_id: int, student_id: int,
                status: str, check_in_time=None,
                recognition_score: float = 0) -> int:
+        # Sử dụng chuẩn SQL tường minh cho MySQL 8 (không dùng VALUES() deprecated)
         get_db().execute(
             """
-            MERGE AttendanceRecords AS target
-            USING (SELECT ? AS sid, ? AS uid) AS src
-                ON target.session_id = src.sid AND target.student_id = src.uid
-            WHEN MATCHED THEN
-                UPDATE SET status = ?, check_in_time = ?, recognition_score = ?
-            WHEN NOT MATCHED THEN
-                INSERT (session_id, student_id, status, check_in_time, recognition_score)
-                VALUES (?, ?, ?, ?, ?);
+            INSERT INTO AttendanceRecords (session_id, student_id, status, check_in_time, recognition_score)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                status = ?, 
+                check_in_time = ?, 
+                recognition_score = ?
             """,
-            (session_id, student_id,
-             status, check_in_time, recognition_score,
-             session_id, student_id, status, check_in_time, recognition_score),
+            (session_id, student_id, status, check_in_time, recognition_score,
+             status, check_in_time, recognition_score),
             commit=True,
         )
         rows = get_db().execute(
@@ -637,7 +665,7 @@ class AttendanceRecordRepository:
         rows = get_db().execute(
             """
             SELECT s.student_code, s.full_name, ar.check_in_time, ar.recognition_score,
-                   ISNULL(c.class_code, ISNULL(s.class_name, '')) AS class_code
+                   IFNULL(c.class_code, IFNULL(s.class_name, '')) AS class_code
             FROM AttendanceRecords ar
             INNER JOIN Students s ON s.student_id = ar.student_id
             LEFT JOIN Classes c ON c.class_id = s.class_id

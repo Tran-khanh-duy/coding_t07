@@ -193,65 +193,61 @@ class EnrollPage(QWidget):
 
     def _setup_ui(self):
         main = QVBoxLayout(self)
-        main.setContentsMargins(20, 20, 20, 20)
-        main.setSpacing(15)
+        main.setContentsMargins(30, 25, 30, 25) # Đồng bộ margin với StudentsPage
+        main.setSpacing(25)
 
         # ── Header ──
         header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 5)
-        
-        title_icon = QLabel("👤")
-        title_icon.setStyleSheet("font-size: 28px;")
+        header.setContentsMargins(0, 0, 0, 10)
         
         title_col = QVBoxLayout()
-        title_col.setSpacing(2)
-        title = QLabel("Đăng Ký Học Viên")
-        title.setStyleSheet(f"font-size: 22px; font-weight: 800; color: {Colors.TEXT};")
-        subtitle = QLabel("Hệ thống nhận diện khuôn mặt — Chụp 10 ảnh mẫu")
-        subtitle.setStyleSheet(f"font-size: 13px; color: {Colors.TEXT_DIM};")
-        title_col.addWidget(title)
-        title_col.addWidget(subtitle)
+        title_col.setSpacing(4)
         
-        header.addWidget(title_icon)
+        self._title_lbl = QLabel("ĐĂNG KÝ HỌC VIÊN")
+        self._title_lbl.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {Colors.TEXT};")
+        
+        self._subtitle_lbl = QLabel("Hệ thống nhận diện khuôn mặt — Chụp 15 ảnh mẫu để đảm bảo độ chính xác")
+        self._subtitle_lbl.setStyleSheet(f"font-size: 14px; color: {Colors.TEXT_DIM};")
+        
+        title_col.addWidget(self._title_lbl)
+        title_col.addWidget(self._subtitle_lbl)
         header.addLayout(title_col)
         header.addStretch()
+        
         main.addLayout(header)
 
-        # ── Separator ──
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setStyleSheet(f"background-color: {Colors.BORDER_LT}; min-height: 1px; max-height: 1px; border: none;")
-        main.addWidget(line)
-
         # ── Global Buttons Initialization ──
-        # (We initialize them here but place them inside the build_panel methods)
-        def create_action_btn(text: str, bg: str, hover: str, text_col: str = "white"):
+        def create_action_btn(text: str, bg: str, hover: str, text_col: str = "white", height=45):
             btn = QPushButton(text)
-            btn.setFixedHeight(60)
+            btn.setFixedHeight(height)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.setStyleSheet(f"""
-                QPushButton {{ background: {bg}; color: {text_col}; border-radius: 10px; font-weight: 800; font-size: 13px; letter-spacing: 0.5px; padding: 0 15px; }}
+                QPushButton {{ 
+                    background: {bg}; color: {text_col}; border-radius: 8px; 
+                    font-weight: 800; font-size: 13px; letter-spacing: 0.5px; 
+                    padding: 0 20px; border: none;
+                }}
                 QPushButton:hover {{ background: {hover}; }}
-                QPushButton:disabled {{ background: {Colors.BG_PANEL}; color: {Colors.TEXT_DARK}; border: 1px solid {Colors.BORDER_LT}; }}
+                QPushButton:disabled {{ background: {Colors.BG_DARK}; color: {Colors.TEXT_DARK}; border: none {Colors.BORDER_LT}; }}
             """)
             return btn
 
         self._btn_reset = create_action_btn("🔄  LÀM MỚI", Colors.BG_CARD, Colors.BG_HOVER, Colors.TEXT)
-        self._btn_reset.setStyleSheet(self._btn_reset.styleSheet().replace("border-radius: 10px;", f"border-radius: 10px; border: 1px solid {Colors.BORDER_LT};"))
+        self._btn_reset.setStyleSheet(self._btn_reset.styleSheet().replace("border: none;", f"border: 1.5px solid {Colors.BORDER_LT};"))
         self._btn_reset.clicked.connect(self._reset_form)
 
-        self._btn_create = create_action_btn("✅  XÁC NHẬN", Colors.CYAN, Colors.CYAN_DIM)
+        self._btn_create = create_action_btn("✅  XÁC NHẬN THÔNG TIN", Colors.CYAN, Colors.CYAN_DIM)
         self._btn_create.clicked.connect(self._on_create_student)
 
         self._btn_camera = create_action_btn("📷  MỞ CAMERA", Colors.BG_CARD, Colors.BG_HOVER, Colors.TEXT)
-        self._btn_camera.setStyleSheet(self._btn_camera.styleSheet().replace("border-radius: 10px;", f"border-radius: 10px; border: 1px solid {Colors.BORDER_LT};"))
+        self._btn_camera.setStyleSheet(self._btn_camera.styleSheet().replace("border: none;", f"border: 1.5px solid {Colors.BORDER_LT};"))
         self._btn_camera.clicked.connect(self._toggle_camera)
 
         self._btn_capture = create_action_btn("📸  BẮT ĐẦU CHỤP", Colors.GREEN, Colors.GREEN_DIM)
         self._btn_capture.setEnabled(False)
         self._btn_capture.clicked.connect(self._start_capture)
 
-        self._btn_enroll = create_action_btn("🎯  HOÀN TẤT", Colors.ORANGE, "#D97706")
+        self._btn_enroll = create_action_btn("🎯  HOÀN TẤT ĐĂNG KÝ", Colors.ORANGE, "#D97706")
         self._btn_enroll.setEnabled(False)
         self._btn_enroll.clicked.connect(self._finish_enrollment)
 
@@ -266,115 +262,80 @@ class EnrollPage(QWidget):
         splitter.setSizes([550, 550])
         main.addWidget(splitter, 1)
 
-        self._title_lbl = title
-        self._subtitle_lbl = subtitle
+
 
     def _build_form_panel(self) -> QWidget:
-        panel = QWidget()
-        panel.setObjectName("FormPanel")
-        panel.setStyleSheet(f"QWidget#FormPanel {{ background: {Colors.BG_CARD}; border: 1px solid {Colors.BORDER_LT}; border-radius: 15px; }}")
+        panel = QFrame()
+        panel.setStyleSheet(card_style(Colors.BORDER, radius=12))
         layout = QVBoxLayout(panel)
-        layout.setContentsMargins(30, 25, 30, 20)
-        layout.setSpacing(10)
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(15)
 
-        layout.addStretch(1)
         title = QLabel("THÔNG TIN CƠ BẢN")
         title.setStyleSheet(f"font-size: 12px; font-weight: 800; color: {Colors.CYAN}; letter-spacing: 1.5px;")
         layout.addWidget(title, 0, Qt.AlignmentFlag.AlignCenter)
-        layout.addStretch(1)
+        layout.addSpacing(10)
 
         grid = QGridLayout()
         grid.setSpacing(15)
-        grid.setVerticalSpacing(15)
         
         def create_label(text: str):
             lbl = QLabel(text)
-            lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 11px; font-weight: 700;")
+            lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 11px; font-weight: 800; text-transform: uppercase;")
             return lbl
 
         grid.addWidget(create_label("Mã học viên *"), 0, 0)
         grid.addWidget(create_label("Họ và tên *"), 0, 1)
-        self._inp_code = QLineEdit(); self._inp_code.setStyleSheet(input_style()); self._inp_code.setFixedHeight(48); self._inp_code.setPlaceholderText("VD: HV001")
-        self._inp_name = QLineEdit(); self._inp_name.setStyleSheet(input_style()); self._inp_name.setFixedHeight(48); self._inp_name.setPlaceholderText("Nguyễn Văn A")
-        
-        # Thêm sự kiện kiểm tra học viên đã tồn tại
+        self._inp_code = QLineEdit(); self._inp_code.setStyleSheet(input_style()); self._inp_code.setFixedHeight(42); self._inp_code.setPlaceholderText("VD: HV001")
+        self._inp_name = QLineEdit(); self._inp_name.setStyleSheet(input_style()); self._inp_name.setFixedHeight(42); self._inp_name.setPlaceholderText("Nguyễn Văn A")
         self._inp_code.editingFinished.connect(self._check_existing_student)
-        
         grid.addWidget(self._inp_code, 1, 0)
         grid.addWidget(self._inp_name, 1, 1)
 
-        # ── Cascading Data Mapping ──
-        self._class_mapping = {
-            "KTX E1": { "Tầng 1": [], "Tầng 2": [], "Tầng 3": [], "Tầng 4": [], "Tầng 5": [] },
-            "KTX E2": { "Tầng 1": [], "Tầng 2": [], "Tầng 3": [], "Tầng 4": [], "Tầng 5": [] },
-            "KTX E3": {
-                "Tầng 1": ["B3D13", "B4D13", "B5D13", "B6D13", "B3D14", "B4D14", "B5D14", "B6D14"],
-                "Tầng 2": ["VB2K3", "B1-VB2K4", "B2-VB2K4", "B3-VB2K4", "VB2C1", "B2D12", "B3D12", "B4D12", "B5D12", "B1-LT8", "B2-LT8"],
-                "Tầng 3": ["B3D15", "B4D15", "B5D15", "B6D15", "B7D15", "B8D15", "B9D15", "B10D15", "B11D15"],
-                "Tầng 4": [],
-                "Tầng 5": []
-            },
-            "KTX E4": {
-                "Tầng 1": ["B4D14", "B5D14", "B6D14"],
-                "Tầng 2": ["B1-LT8", "B2-LT8", "B3D14"],
-                "Tầng 3": ["B2D12", "B3D12", "B4D12", "B5D12"],
-                "Tầng 4": ["B3D13", "B4D13", "B5D13", "B6D13"],
-                "Tầng 5": ["VB2K3"]
-            },
-            "KTX E5": {
-                "Tầng 1": ["B1-VB2K4", "B2-VB2K4", "B3-VB2K4"],
-                "Tầng 2": ["VB2C1"],
-                "Tầng 3": ["B3D15", "B4D15", "B5D15", "B6D15", "B7D15", "B8D15"],
-                "Tầng 4": ["B9D15", "B10D15", "B11D15"]
-            },
-            "KTX E6": { "Tầng 1": [], "Tầng 2": [], "Tầng 3": [], "Tầng 4": [], "Tầng 5": [] }
-        }
-
         grid.addWidget(create_label("Tòa nhà (Mini PC) *"), 2, 0)
         grid.addWidget(create_label("Tầng *"), 2, 1)
-        self._cmb_building = QComboBox(); self._cmb_building.addItems(["-- Chọn Mini PC (Tòa) --", "KTX E1", "KTX E2", "KTX E3", "KTX E4", "KTX E5", "KTX E6"]); self._cmb_building.setStyleSheet(combo_style()); self._cmb_building.setFixedHeight(48)
-        self._cmb_floor = QComboBox(); self._cmb_floor.addItem("-- Tầng --"); self._cmb_floor.setStyleSheet(combo_style()); self._cmb_floor.setFixedHeight(48)
+        self._cmb_building = QComboBox(); self._cmb_building.addItems(["-- Chọn Mini PC --", "KTX E1", "KTX E2", "KTX E3", "KTX E4", "KTX E5", "KTX E6"]); self._cmb_building.setStyleSheet(combo_style()); self._cmb_building.setFixedHeight(42)
+        self._cmb_floor = QComboBox(); self._cmb_floor.addItem("-- Tầng --"); self._cmb_floor.setStyleSheet(combo_style()); self._cmb_floor.setFixedHeight(42)
         grid.addWidget(self._cmb_building, 3, 0)
         grid.addWidget(self._cmb_floor, 3, 1)
 
         grid.addWidget(create_label("Lớp học *"), 4, 0)
         grid.addWidget(create_label("Giới tính"), 4, 1)
-        self._cmb_class = QComboBox(); self._cmb_class.setStyleSheet(combo_style()); self._cmb_class.setFixedHeight(48)
-        self._cmb_gender = QComboBox(); self._cmb_gender.addItems(["Nam", "Nữ"]); self._cmb_gender.setStyleSheet(combo_style()); self._cmb_gender.setFixedHeight(48)
+        self._cmb_class = QComboBox(); self._cmb_class.setStyleSheet(combo_style()); self._cmb_class.setFixedHeight(42)
+        self._cmb_gender = QComboBox(); self._cmb_gender.addItems(["Nam", "Nữ"]); self._cmb_gender.setStyleSheet(combo_style()); self._cmb_gender.setFixedHeight(42)
         grid.addWidget(self._cmb_class, 5, 0)
         grid.addWidget(self._cmb_gender, 5, 1)
 
         grid.addWidget(create_label("Phòng"), 6, 0)
         grid.addWidget(create_label("Số điện thoại"), 6, 1)
-        self._cmb_room = QComboBox(); self._cmb_room.addItem("-- Phòng --"); self._cmb_room.setStyleSheet(combo_style()); self._cmb_room.setFixedHeight(48)
-        self._inp_phone = QLineEdit(); self._inp_phone.setStyleSheet(input_style()); self._inp_phone.setFixedHeight(48); self._inp_phone.setPlaceholderText("090xxxxxxx")
+        self._cmb_room = QComboBox(); self._cmb_room.addItem("-- Phòng --"); self._cmb_room.setStyleSheet(combo_style()); self._cmb_room.setFixedHeight(42)
+        self._inp_phone = QLineEdit(); self._inp_phone.setStyleSheet(input_style()); self._inp_phone.setFixedHeight(42); self._inp_phone.setPlaceholderText("090xxxxxxx")
         grid.addWidget(self._cmb_room, 7, 0)
         grid.addWidget(self._inp_phone, 7, 1)
 
         grid.addWidget(create_label("Email"), 8, 0)
         grid.addWidget(create_label("Nguồn Camera chụp ảnh"), 8, 1)
-        self._inp_email = QLineEdit(); self._inp_email.setStyleSheet(input_style()); self._inp_email.setFixedHeight(48); self._inp_email.setPlaceholderText("example@mail.com")
-        self._cmb_camera = QComboBox(); self._cmb_camera.setStyleSheet(combo_style()); self._cmb_camera.setFixedHeight(48)
+        self._inp_email = QLineEdit(); self._inp_email.setStyleSheet(input_style()); self._inp_email.setFixedHeight(42); self._inp_email.setPlaceholderText("example@mail.com")
+        self._cmb_camera = QComboBox(); self._cmb_camera.setStyleSheet(combo_style()); self._cmb_camera.setFixedHeight(42)
         grid.addWidget(self._inp_email, 9, 0)
         grid.addWidget(self._cmb_camera, 9, 1)
 
-        # Connect signals for cascading dropdowns
         self._cmb_building.currentTextChanged.connect(self._on_building_changed)
         self._cmb_floor.currentTextChanged.connect(self._on_floor_changed)
 
         layout.addLayout(grid)
-        layout.addStretch(2)
+        layout.addStretch()
 
         self._lbl_create_status = QLabel("")
         self._lbl_create_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._lbl_create_status.setStyleSheet(f"font-size: 11px; font-weight: 600; color: {Colors.TEXT_DIM}; min-height: 20px;")
+        self._lbl_create_status.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {Colors.TEXT_DIM}; min-height: 25px;")
         layout.addWidget(self._lbl_create_status)
 
-        # Bottom Buttons within Form Panel Card
+        # Bottom Buttons
         btn_row = QHBoxLayout()
         btn_row.setSpacing(12)
         btn_row.addWidget(self._btn_reset, 1)
-        btn_row.addWidget(self._btn_create, 1)
+        btn_row.addWidget(self._btn_create, 2)
         layout.addLayout(btn_row)
 
         return panel
@@ -383,59 +344,58 @@ class EnrollPage(QWidget):
     def _build_camera_panel(self) -> QWidget:
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        layout.setSpacing(15)
-        layout.setContentsMargins(0, 0, 0, 20)
+        layout.setSpacing(20)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         # Main Camera View
         self._camera_view = CameraPreviewWidget(placeholder_text="📷 Chờ mở Camera...")
-        self._camera_view.setMinimumHeight(350)
+        self._camera_view.setMinimumHeight(400)
         self._camera_view.setObjectName("CamView")
-        self._camera_view.setStyleSheet(f"QWidget#CamView {{ background: {Colors.CAM_BG}; border: 2px solid {Colors.BORDER_LT}; border-radius: 15px; }}")
+        self._camera_view.setStyleSheet(f"QWidget#CamView {{ background: {Colors.CAM_BG}; border: 2.5px solid {Colors.BORDER_LT}; border-radius: 12px; }}")
         layout.addWidget(self._camera_view, 1)
 
         # Progress Section Card
         prog_card = QFrame()
-        prog_card.setStyleSheet(f"background: {Colors.BG_CARD}; border: 1px solid {Colors.BORDER_LT}; border-radius: 12px;")
+        prog_card.setStyleSheet(card_style(Colors.BORDER, radius=12))
         prog_layout = QVBoxLayout(prog_card)
-        prog_layout.setContentsMargins(18, 15, 18, 15)
-        prog_layout.setSpacing(10)
+        prog_layout.setContentsMargins(20, 20, 20, 20)
+        prog_layout.setSpacing(15)
 
         p_header = QHBoxLayout()
         p_title = QLabel("TIẾN TRÌNH CHỤP MẪU")
         p_title.setStyleSheet(f"font-size: 11px; font-weight: 800; color: {Colors.TEXT_DIM}; letter-spacing: 1px;")
         self._lbl_count = QLabel("0 / 15")
-        self._lbl_count.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {Colors.CYAN};")
+        self._lbl_count.setStyleSheet(f"font-size: 16px; font-weight: 800; color: {Colors.CYAN};")
         p_header.addWidget(p_title); p_header.addStretch(); p_header.addWidget(self._lbl_count)
         prog_layout.addLayout(p_header)
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 15); self._progress_bar.setValue(0); self._progress_bar.setFixedHeight(8); self._progress_bar.setTextVisible(False)
-        self._progress_bar.setStyleSheet(f"QProgressBar {{ background: {Colors.BG_PANEL}; border-radius: 4px; border: none; }} QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {Colors.CYAN_DIM}, stop:1 {Colors.CYAN}); border-radius: 4px; }}")
+        self._progress_bar.setStyleSheet(f"QProgressBar {{ background: {Colors.BG_DARK}; border-radius: 4px; border: none; }} QProgressBar::chunk {{ background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {Colors.CYAN_DIM}, stop:1 {Colors.CYAN}); border-radius: 4px; }}")
         prog_layout.addWidget(self._progress_bar)
 
-        self._dots_layout = QHBoxLayout(); self._dots_layout.setSpacing(8); self._dots: list[QLabel] = []
+        dot_container = QWidget()
+        self._dots_layout = QHBoxLayout(dot_container); self._dots_layout.setContentsMargins(0, 0, 0, 0); self._dots_layout.setSpacing(6); self._dots: list[QLabel] = []
         for i in range(15):
-            dot = QLabel("○"); dot.setFixedWidth(22); dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 14px;")
+            dot = QLabel("●"); dot.setFixedWidth(16); dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 16px;")
             self._dots.append(dot); self._dots_layout.addWidget(dot)
         self._dots_layout.addStretch()
         self._lbl_face_status = QLabel("⬤ NO FACE")
         self._lbl_face_status.setStyleSheet(f"color: {Colors.TEXT_DARK}; font-size: 11px; font-weight: 800; letter-spacing: 1px;")
         self._dots_layout.addWidget(self._lbl_face_status)
-        prog_layout.addLayout(self._dots_layout)
+        prog_layout.addWidget(dot_container)
         layout.addWidget(prog_card)
 
+        # Action Buttons
         layout.addStretch()
-
-        # Guide Text - Centered above buttons
-        self._lbl_guide = QLabel("💡 Vui lòng nhập thông tin học viên trước")
+        self._lbl_guide = QLabel("💡 Vui lòng nhập thông tin học viên trước khi chụp ảnh")
         self._lbl_guide.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._lbl_guide.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 11px; font-weight: 600; font-style: italic; min-height: 20px;")
+        self._lbl_guide.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; font-style: italic;")
         layout.addWidget(self._lbl_guide)
         
-        # Action Buttons within Camera Panel (aligned with form buttons)
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(10)
+        btn_row.setSpacing(12)
         btn_row.addWidget(self._btn_camera, 1)
         btn_row.addWidget(self._btn_capture, 1)
         btn_row.addWidget(self._btn_enroll, 1)
@@ -473,20 +433,22 @@ class EnrollPage(QWidget):
         self._inp_phone.setText(student.phone or "")
         self._inp_email.setText(student.email or "")
         
-        r_idx = self._cmb_room.findText(student.room or "-- Phòng --")
-        if r_idx >= 0: self._cmb_room.setCurrentIndex(r_idx)
-        
-        # Set building
+        # 1. Set Building & Floor trước (để trigger load_rooms và load_classes)
         b_idx = self._cmb_building.findText(student.building or "-- Chọn Mini PC (Tòa) --")
         if b_idx >= 0: self._cmb_building.setCurrentIndex(b_idx)
-        # Set floor
+        
         f_idx = self._cmb_floor.findText(student.floor or "-- Tầng --")
         if f_idx >= 0: self._cmb_floor.setCurrentIndex(f_idx)
 
-        gender_map = {"Nam": 1, "Nữ": 2, "Khác": 3}
-        idx = gender_map.get(student.gender, 0)
-        self._cmb_gender.setCurrentIndex(idx)
+        # 2. Sau khi Floor đã set -> Room đã được load -> Set Room
+        r_idx = self._cmb_room.findText(student.room or "-- Phòng --")
+        if r_idx >= 0: self._cmb_room.setCurrentIndex(r_idx)
 
+        # 3. Set Gender (Dùng findText cho an toàn)
+        g_idx = self._cmb_gender.findText(student.gender or "Nam")
+        if g_idx >= 0: self._cmb_gender.setCurrentIndex(g_idx)
+
+        # 4. Set Class
         for i in range(self._cmb_class.count()):
             if self._cmb_class.itemData(i) == student.class_id:
                 self._cmb_class.setCurrentIndex(i)
@@ -498,7 +460,7 @@ class EnrollPage(QWidget):
             self._setup_create_mode_prefilled(student)
 
     def _setup_update_mode(self, student):
-        self._title_lbl.setText("Cập Nhật Thông Tin")
+        self._title_lbl.setText("CẬP NHẬT THÔNG TIN")
         self._subtitle_lbl.setText(f"Chỉnh sửa thông tin và chụp lại ảnh mẫu — [{student.student_code}]")
         
         for w in [self._inp_code, self._inp_name, self._cmb_class, self._cmb_gender, self._inp_phone, self._inp_email, self._cmb_building, self._cmb_floor, self._cmb_room]:
@@ -521,7 +483,7 @@ class EnrollPage(QWidget):
         self._set_create_status(f"✏️  Sẵn sàng chỉnh sửa: [{student.student_code}] {student.full_name}", Colors.ORANGE)
 
     def _setup_create_mode_prefilled(self, student):
-        self._title_lbl.setText("Đăng Ký Học Viên")
+        self._title_lbl.setText("ĐĂNG KÝ HỌC VIÊN")
         self._subtitle_lbl.setText(f"Thông tin đã điền — [{student.student_code}] chỉ cần mở camera và chụp")
         self._lock_form()
         self._btn_create.setEnabled(False)
@@ -536,6 +498,10 @@ class EnrollPage(QWidget):
             return
 
         class_id = self._cmb_class.currentData()
+        if class_id is None:
+            self._set_create_status("⚠️ Vui lòng chọn lớp học!", Colors.ORANGE)
+            return
+
         gender   = self._cmb_gender.currentText()
         gender   = None if gender == "-- Chọn --" else gender
         building = self._cmb_building.currentText()
@@ -544,6 +510,7 @@ class EnrollPage(QWidget):
         floor    = None if floor == "-- Tầng --" else floor
         room     = self._cmb_room.currentText()
         room     = None if room == "-- Phòng --" else room
+        class_name = self._cmb_class.currentText()
         phone    = self._inp_phone.text().strip() or None
         email    = self._inp_email.text().strip() or None
 
@@ -551,7 +518,7 @@ class EnrollPage(QWidget):
             from database.repositories import student_repo
             updated = student_repo.update(
                 student_id=self._current_student_id, student_code=code, full_name=name,
-                class_id=class_id, gender=gender, phone=phone, email=email,
+                class_id=class_id, class_name=class_name, gender=gender, phone=phone, email=email,
                 building=building, floor=floor, room=room
             )
             if not updated:
@@ -572,6 +539,8 @@ class EnrollPage(QWidget):
                 self._set_create_status(f"✅ Đã cập nhật thông tin [{code}] {name} (không có ảnh mới)", Colors.GREEN)
                 self._btn_create.setText("✅  Đã cập nhật")
                 self._btn_create.setEnabled(False)
+                # [FIX] Cập nhật cache ngay cả khi chỉ đổi text
+                self._reload_and_notify()
         except Exception as e:
             logger.error(f"_on_update_student error: {e}")
             self._set_create_status(f"❌ Lỗi: {e}", Colors.RED)
@@ -745,7 +714,6 @@ class EnrollPage(QWidget):
         building = None if building == "-- Chọn Mini PC (Tòa) --" else building
         floor    = self._cmb_floor.currentText()
         floor    = None if floor == "-- Tầng --" else floor
-        floor    = None if floor == "-- Tầng --" else floor
         room     = self._cmb_room.currentText()
         room     = None if room == "-- Phòng --" else room
         phone    = self._inp_phone.text().strip() or None
@@ -850,14 +818,14 @@ class EnrollPage(QWidget):
                 f"Ảnh mẫu: {result.photos_valid}/{result.photos_taken}"
             )
             self._lbl_result.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {Colors.GREEN};")
-            self._result_card.setStyleSheet(f"background: {Colors.GREEN}20; border: 1px solid {Colors.GREEN}44; border-radius: 12px;")
+            self._result_card.setStyleSheet(f"background: {Colors.GREEN}20; border : none {Colors.GREEN}44; border-radius: 12px;")
             self._btn_enroll.setText("✅  ĐÃ HOÀN TẤT")
             # [FIX] Reload cache cục bộ + Thông báo API Server để Mini PC biết có embedding mới
             self._reload_and_notify()
         else:
             self._lbl_result.setText(f"❌ {result.error_msg}")
             self._lbl_result.setStyleSheet(f"font-size: 14px; font-weight: 800; color: {Colors.RED};")
-            self._result_card.setStyleSheet(f"background: {Colors.RED}20; border: 1px solid {Colors.RED}44; border-radius: 12px;")
+            self._result_card.setStyleSheet(f"background: {Colors.RED}20; border : none {Colors.RED}44; border-radius: 12px;")
             self._btn_enroll.setText("🎯  THỬ LẠI")
             self._btn_enroll.setEnabled(True)
 

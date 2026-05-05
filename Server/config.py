@@ -26,26 +26,22 @@ for _dir in [MODELS_DIR, SNAPSHOTS_DIR, LOGS_DIR, REPORTS_DIR]:
 # ─────────────────────────────────────────────
 @dataclass
 class DatabaseConfig:
-    server:   str = os.getenv("DB_SERVER",   r".")
-    database: str = os.getenv("DB_NAME",     "FaceAttendanceDB")
-    driver:   str = os.getenv("DB_DRIVER",   "ODBC Driver 17 for SQL Server")
-    use_windows_auth: bool = True
-    username: str = os.getenv("DB_USER", "sa")
-    password: str = os.getenv("DB_PASS", "")
+    host:     str = os.getenv("DB_HOST", "localhost")
+    port:     int = int(os.getenv("DB_PORT", "3306"))
+    database: str = os.getenv("DB_NAME", "faceattendancedb")
+    username: str = os.getenv("DB_USER", "root")
+    password: str = os.getenv("DB_PASS", "Quockhai@24092003")
 
     @property
-    def connection_string(self) -> str:
-        if self.use_windows_auth:
-            return (
-                f"DRIVER={{{self.driver}}};SERVER={self.server};"
-                f"DATABASE={self.database};Trusted_Connection=yes;"
-                f"TrustServerCertificate=yes;"
-            )
-        return (
-            f"DRIVER={{{self.driver}}};SERVER={self.server};"
-            f"DATABASE={self.database};UID={self.username};"
-            f"PWD={self.password};TrustServerCertificate=yes;"
-        )
+    def connection_args(self) -> dict:
+        return {
+            "host": self.host,
+            "port": self.port,
+            "database": self.database,
+            "user": self.username,
+            "password": self.password,
+            "consume_results": True,
+        }
 
 # ─────────────────────────────────────────────
 #  AI / NHẬN DẠNG KHUÔN MẶT (CẤU HÌNH SERVER)
@@ -63,9 +59,9 @@ class AIConfig:
         default_factory=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
     )
 
-    # TRẢ LẠI CHUẨN ĐỘ PHÂN GIẢI CAO: Giữ (640, 640) để model quét kỹ hơn,
-    # bắt được khuôn mặt ở xa và góc nghiêng tốt hơn, đảm bảo độ chính xác >98%.
-    det_size:         tuple = (640, 640)  # [Đã Nâng Cấp] Tăng kích thước lưới quét AI
+    # GIẢM ĐỘ PHÂN GIẢI ĐỂ TĂNG TỐC ĐỘ: Chuyển từ (640, 640) xuống (320, 320)
+    # Giúp model phát hiện khuôn mặt cực nhanh (giảm thời gian inference xuống mức mili-giây)
+    det_size:         tuple = (320, 320)  # [Đã Tối Ưu] Kích thước lưới quét AI nhỏ hơn để chạy nhanh hơn
 
     # Threshold 0.65 là "Điểm Vàng" theo công bố của InsightFace cho ảnh lấy từ Camera Thực tế
     recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.65")) 
@@ -88,8 +84,8 @@ class CameraConfig:
     reconnect_delay_sec: int = 3
     max_reconnect_tries: int = 5
 
-    # TĂNG KHOẢNG CÁCH XỬ LÝ: Skip khung hình để giảm tải CPU/GPU
-    process_every_n_frames: int = int(os.getenv("CAM_PROCESS_N", "3"))
+    # TĂNG KHOẢNG CÁCH XỬ LÝ: Để 1 hoặc 2 để nhận diện nhanh và nhạy hơn
+    process_every_n_frames: int = int(os.getenv("CAM_PROCESS_N", "1"))
 
     @property
     def is_ip_camera(self) -> bool:
@@ -130,7 +126,7 @@ class AppConfig:
 
 @dataclass
 class AntiSpoofConfig:
-    enabled:   bool = os.getenv("ENABLE_ANTISPOOF", "true").lower() == "true"
+    enabled:   bool = os.getenv("ENABLE_ANTISPOOF", "false").lower() == "true"
     model_dir: Path = BASE_DIR / "Silent-Face-Anti-Spoofing-master" / "resources" / "anti_spoof_models"
     device_id: int = 0  # GPU ID hoặc -1 cho CPU
     threshold: float = 0.80 # Ngưỡng xác định là mặt thật (tối đa 1.0)
@@ -203,7 +199,7 @@ class EdgeConfig:
 
     # Cooldown & Hiệu suất
     attendance_cooldown:  int  = int(os.getenv("EDGE_COOLDOWN", "60"))
-    process_every_n:      int  = int(os.getenv("EDGE_PROCESS_N", "3"))
+    process_every_n:      int  = int(os.getenv("EDGE_PROCESS_N", "1"))
 
     # Hiển thị
     fullscreen:           bool = os.getenv("EDGE_FULLSCREEN", "true").lower() == "true"

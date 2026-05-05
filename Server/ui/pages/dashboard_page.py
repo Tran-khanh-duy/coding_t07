@@ -366,7 +366,7 @@ class DashboardPage(QWidget):
         health_row.setSpacing(20)
         
         self.health_ai = StatusTile("AI Engine", "🧠", Colors.CYAN)
-        server_name = db_config.server.split('\\')[-1] 
+        server_name = db_config.host
         self.health_db = StatusTile("Database", "🗄️", Colors.PURPLE)
         self.health_gpu = StatusTile("GPU Compute", "⚡", Colors.ORANGE)
         self.health_sys = StatusTile("Server Status", "🖥️", Colors.GREEN)
@@ -397,7 +397,7 @@ class DashboardPage(QWidget):
             self.health_ai.set_status("Loading...", False)
             
         # DB
-        server_name = db_config.server.split('\\')[-1]
+        server_name = db_config.host
         self.health_db.set_status(server_name, True)
         
         # GPU

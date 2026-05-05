@@ -850,29 +850,73 @@ class AttendancePage(QWidget):
 
         try:
             from database.connection import get_db
-            db = get_db()
-            db.execute("IF NOT EXISTS (SELECT 1 FROM Classes WHERE class_code = 'GLOBAL') INSERT INTO Classes (class_code, class_name) VALUES ('GLOBAL', ?);", ("Toàn trường",), commit=True)
-            
-            from database.repositories import class_repo
-            classes = class_repo.get_all()
-            target_class = next((c for c in classes if c.class_name == "Toàn trường"), None)
-            
-            if target_class:
-                class_id = target_class.class_id
-            elif classes:
-                class_id = classes[0].class_id
-            else:
-                QMessageBox.warning(self, "Lỗi", "Chưa có danh mục Lớp Học nào trong CSDL!")
-                return
-        except Exception as e:
             from loguru import logger
-            logger.error(f"Lỗi tìm Lớp Toàn trường: {e}")
-            class_id = 1
+            db = get_db()
+            
+            # --- ĐOẠN ĐÃ SỬA LỖI ---
+            # 1. MySQL không dùng 'IF NOT EXISTS' trực tiếp trong INSERT.
+            # 2. db.execute() trả về một list, vì vậy chúng ta kiểm tra độ dài list thay vì dùng .fetchone().
+            # 3. Sử dụng %s cho MySQL placeholder thay vì ?.
+            
+            check_sql = "SELECT class_id FROM Classes WHERE class_code = 'GLOBAL' LIMIT 1"
+            
+            # Thực thi câu lệnh kiểm tra
+            rows = db.execute(check_sql)
+            
+            # Lấy dòng đầu tiên nếu list không rỗng
+            res = rows[0] if rows and len(rows) > 0 else None
+            
+            if not res:
+                # Bước 2: Nếu chưa có thì mới Insert
+                logger.info("Không tìm thấy lớp GLOBAL, đang tạo mới...")
+                db.execute(
+                    "INSERT INTO Classes (class_code, class_name) VALUES ('GLOBAL', %s)", 
+                    ("Toàn trường",), 
+                    commit=True
+                )
+                # Truy vấn lại để lấy class_id sau khi chèn
+                rows = db.execute(check_sql)
+                res = rows[0] if rows and len(rows) > 0 else None
+            
+            # Trích xuất class_id từ kết quả (xử lý cả dạng tuple hoặc dict)
+            if res:
+                if isinstance(res, (list, tuple)):
+                    class_id = res[0]
+                else:
+                    class_id = res.get('class_id')
+            else:
+                class_id = None
+
+            # --- KẾT THÚC ĐOẠN SỬA ---
+
+            # Nếu vẫn không lấy được class_id, thử tìm theo tên hoặc lấy đại diện
+            if not class_id:
+                from database.repositories import class_repo
+                classes = class_repo.get_all()
+                target_class = next((c for c in classes if c.class_name == "Toàn trường"), None)
+                
+                if target_class:
+                    class_id = target_class.class_id
+                elif classes:
+                    class_id = classes[0].class_id
+                else:
+                    QMessageBox.warning(self, "Lỗi", "Chưa có danh mục Lớp Học nào trong CSDL!")
+                    return
+            
+            # Đảm bảo class_id là kiểu số nguyên
+            class_id = int(class_id)
+
+        except Exception as e:
+            logger.error(f"Lỗi xử lý Lớp học: {e}")
+            # Fallback về 1 ID an toàn nếu bạn chắc chắn nó tồn tại, 
+            # nhưng tốt nhất là nên để lỗi để tránh sai lệch dữ liệu khóa ngoại
+            QMessageBox.critical(self, "Lỗi Cấu Hình", f"Không tìm thấy ID lớp phù hợp: {e}")
+            return
 
         try:
             from services.attendance_service import attendance_service
 
-            # Xoá ds hiển thị cũ
+            # Xoá danh sách hiển thị cũ trên UI
             while self._list_layout.count() > 1:
                 child = self._list_layout.takeAt(0)
                 if child.widget():
@@ -880,6 +924,8 @@ class AttendancePage(QWidget):
             
             self._rendered_student_codes.clear()
 
+            # --- SỬA LỖI KHÓA NGOẠI (1452) ---
+            # class_id bây giờ đã chắc chắn tồn tại trong bảng Classes
             sid = attendance_service.create_session(
                 class_id=class_id, 
                 subject_name=self._inp_subject.currentText(), 
@@ -894,7 +940,7 @@ class AttendancePage(QWidget):
             self._db_poll_timer.start(1000)
             self._clock_timer.start(1000)
 
-            # Gửi lệnh START tới API Server (Dùng Thread để không lag UI)
+            # Gửi lệnh START tới API Server
             def send_start():
                 try:
                     requests.post("http://127.0.0.1:9696/api/system/command", json={
@@ -903,19 +949,19 @@ class AttendancePage(QWidget):
                         "class_id": class_id,
                         "target_camera": camera_source
                     }, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=5)
-                except: pass
+                except Exception as ex:
+                    logger.warning(f"Không thể gửi lệnh START tới API: {ex}")
             
             import threading
             threading.Thread(target=send_start, daemon=True).start()
 
-            # Không khởi tạo lại worker vì đã khởi tạo liên tục ở _on_camera_selected
             if not hasattr(self, "_worker") or not self._worker or not self._worker.isRunning():
                 QMessageBox.warning(self, "Lỗi", "Vui lòng chọn lại Camera để kết nối!")
                 return
 
             self._btn_start.hide()
             self._btn_stop.show()
-            self._btn_camera_select.setEnabled(True) # KHÔNG khoá chọn camera nữa
+            self._btn_camera_select.setEnabled(True) 
             self._inp_subject.setEnabled(False)
             self._date_picker.setEnabled(False)
             
@@ -928,7 +974,6 @@ class AttendancePage(QWidget):
         except Exception as e:
             logger.error(f"Start session error: {e}")
             QMessageBox.critical(self, "Lỗi", f"Không thể bắt đầu: {e}")
-
     def _stop_session(self):
         reply = QMessageBox.question(
             self, "Kết thúc",

@@ -206,7 +206,7 @@ class DashboardPage(QWidget):
         
         # Dòng 2: Database Server
         # Tách việc xử lý tên server ra ngoài
-        server_name = db_config.server.split('\\')[-1] 
+        server_name = db_config.host
 
         # Sau đó mới đưa vào f-string
         db_info = f"SQL Server ({server_name} - {db_config.database})"

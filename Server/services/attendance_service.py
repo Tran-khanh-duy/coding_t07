@@ -21,6 +21,10 @@ from config import ai_config, app_config
 from database.repositories import session_repo, record_repo
 from database.models import AttendanceSession
 from services.face_engine import RecognitionResult
+try:
+    from services.anti_spoof_service import anti_spoof_service
+except ImportError:
+    anti_spoof_service = None
 
 
 # ─────────────────────────────────────────────
@@ -193,10 +197,7 @@ class AttendanceService:
         if not result.recognized:
             return None
             
-        # NÂNG CẤP: Chống điểm danh hộ qua ảnh/video
-        if not result.is_real:
-            logger.warning(f"Từ chối điểm danh do phát hiện SPOOF: {result.full_name or 'Unknown'}")
-            return None
+        # Spoofing check has been moved down after the cooldown check to optimize performance
 
         self._stats["total_recognized"] += 1
         student_id = result.student_id
@@ -214,6 +215,19 @@ class AttendanceService:
                 except Exception:
                     pass
             return None
+
+        # NÂNG CẤP: Chống điểm danh hộ qua ảnh/video (Chỉ chạy khi bắt đầu ghi điểm danh)
+        if anti_spoof_service and anti_spoof_service.available:
+            try:
+                if frame is not None:
+                    is_real, s_score = anti_spoof_service.is_real(frame, result.bbox)
+                    result.is_real = is_real
+                    result.spoof_score = s_score
+                    if not is_real:
+                        logger.warning(f"Từ chối điểm danh do phát hiện SPOOF [{result.full_name or 'Unknown'}] - Score: {s_score:.3f}")
+                        return None
+            except Exception as e:
+                logger.error(f"Lỗi runtime Anti-Spoofing trong quá trình điểm danh: {e}")
 
         self._set_cooldown(student_id)
 

@@ -2,9 +2,9 @@
 ui/pages/students_page.py
 """
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-    QPushButton, QLineEdit, QTableWidget, QTableWidgetItem, 
-    QHeaderView, QComboBox, QMessageBox, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QLineEdit, QTableWidget, QTableWidgetItem,
+    QHeaderView, QComboBox, QMessageBox, QFrame, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QIcon
@@ -36,7 +36,7 @@ class StudentsPage(QWidget):
         title_col = QVBoxLayout()
         title_col.setSpacing(4)
         
-        title = QLabel("Danh Sách Học Viên")
+        title = QLabel("DANH SÁCH HỌC VIÊN")
         title.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {Colors.TEXT};")
         
         self._subtitle = QLabel("Đang tải dữ liệu học viên...")
@@ -47,14 +47,14 @@ class StudentsPage(QWidget):
         header.addLayout(title_col)
         header.addStretch()
 
-        # Nút Thêm mới
         btn_add = QPushButton("➕  THÊM HỌC VIÊN MỚI")
-        btn_add.setFixedHeight(45)
+        btn_add.setFixedHeight(42)
         btn_add.setMinimumWidth(200)
+        btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_add.setStyleSheet(f"""
             QPushButton {{
                 background: {Colors.CYAN}; color: white;
-                border: none; border-radius: 10px;
+                border: none; border-radius: 8px;
                 font-weight: 800; font-size: 13px; letter-spacing: 0.5px;
             }}
             QPushButton:hover {{ background: {Colors.CYAN_DIM}; }}
@@ -62,17 +62,22 @@ class StudentsPage(QWidget):
         btn_add.clicked.connect(lambda: self.go_to_enroll.emit(-1))
         header.addWidget(btn_add)
 
-        # Nút Làm mới
-        btn_refresh = QPushButton("🔄")
-        btn_refresh.setFixedSize(45, 45)
+        # Nút Làm mới (Sửa lỗi hiển thị ô vuông bằng cách dùng ký tự chuẩn)
+        btn_refresh = QPushButton("↻") 
+        btn_refresh.setFixedSize(42, 42)
+        btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_refresh.setToolTip("Làm mới danh sách")
         btn_refresh.setStyleSheet(f"""
             QPushButton {{
                 background: {Colors.BG_CARD}; color: {Colors.TEXT};
-                border: 1px solid {Colors.BORDER_LT}; border-radius: 10px;
-                font-size: 18px;
+                border: 1.5px solid {Colors.BORDER_LT}; border-radius: 8px;
+                font-size: 24px; font-weight: bold;
             }}
-            QPushButton:hover {{ background: {Colors.BG_HOVER}; border-color: {Colors.CYAN}; }}
+            QPushButton:hover {{ 
+                background: {Colors.BG_HOVER}; 
+                border-color: {Colors.CYAN}; 
+                color: {Colors.CYAN};
+            }}
         """)
         btn_refresh.clicked.connect(self.load_students)
         header.addWidget(btn_refresh)
@@ -81,107 +86,79 @@ class StudentsPage(QWidget):
 
         # ── Search + Filter Bar ──
         search_card = QFrame()
-        search_card.setStyleSheet(card_style(Colors.BORDER, radius=12))
+        search_card.setStyleSheet(card_style(Colors.BORDER, radius=10))
         search_lay = QHBoxLayout(search_card)
-        search_lay.setContentsMargins(15, 10, 15, 10)
+        search_lay.setContentsMargins(15, 8, 15, 8)
         search_lay.setSpacing(15)
 
-        # Ô tìm kiếm
         self._inp_search = QLineEdit()
         self._inp_search.setPlaceholderText("🔍  Tìm kiếm mã học viên, tên hoặc lớp...")
-        self._inp_search.setStyleSheet(input_style())
+        self._inp_search.setStyleSheet(input_style() + "QLineEdit { font-size: 14px; min-height: 42px; }")
         self._inp_search.textChanged.connect(self._filter_table)
         search_lay.addWidget(self._inp_search, 3)
 
-        # Bộ lọc trạng thái
         self._cmb_filter = QComboBox()
         self._cmb_filter.addItems(["💎 Tất cả học viên", "✅ Đã đăng ký khuôn mặt", "⚠️ Chưa đăng ký mặt"])
-        self._cmb_filter.setStyleSheet(combo_style())
+        self._cmb_filter.setStyleSheet(combo_style() + "QComboBox { font-size: 14px; min-height: 42px; }")
         self._cmb_filter.currentIndexChanged.connect(self._filter_table)
         search_lay.addWidget(self._cmb_filter, 1)
         
         layout.addWidget(search_card)
 
         # ── Bảng dữ liệu ──
+        # Tạo QTableWidget và cấu hình cột
         self._table = QTableWidget()
-        self._table.setColumnCount(7)
+        self._table.setColumnCount(8)
         self._table.setHorizontalHeaderLabels([
-            "MÃ HỌC VIÊN", "HỌ VÀ TÊN", "LỚP HỌC", "GIỚI TÍNH",
+            "MÃ HV", "HỌ VÀ TÊN", "LỚP HỌC", "GIỚI TÍNH", "PHÒNG Ở",
             "TRẠNG THÁI", "NGÀY TẠO", "THAO TÁC"
         ])
+        # Thêm trực tiếp bảng vào layout chính
+        layout.addWidget(self._table, 1)
         
-        # Cấu hình Header
-        header_view = self._table.horizontalHeader()
-        header_view.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header_view.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents) # Mã HV
-        header_view.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)          # Tên HV
-        header_view.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents) # Lớp học
-        header_view.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents) # Giới tính
-        
-        # Trạng thái và Thao tác cố định độ rộng để không bị cắt chữ widget
-        header_view.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(4, 160)
-        
-        header_view.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents) # Ngày tạo
-        
-        header_view.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        self._table.setColumnWidth(6, 260) # Cột thao tác rộng rãi
+        # Thanh cuộn ngang (Bắt buộc để không bị ép giao diện)
+        self._table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
 
-        
+        # Cho phép bảng mở rộng
+        self._table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._table.setMinimumWidth(800) 
+
         self._table.verticalHeader().setVisible(False)
-        self._table.verticalHeader().setDefaultSectionSize(78)
-        self._table.verticalHeader().setMinimumSectionSize(78)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setAlternatingRowColors(False)
+        self._table.setAlternatingRowColors(True)
         self._table.setShowGrid(False)
-        
-        # Style bảng đồng bộ với Theme
         self._table.setStyleSheet(f"""
             QTableWidget {{
-                background-color: {Colors.BG_PANEL};
+                background-color: {Colors.BG_PANEL}; 
                 border: 1px solid {Colors.BORDER};
-                border-radius: 12px;
-                color: {Colors.TEXT};
-                font-size: 14px;
+                border-radius: 10px; color: {Colors.TEXT}; font-size: 14px;
             }}
-            QTableWidget::item {{
-                padding: 0px 12px;
-                border-bottom: 1px solid {Colors.BG_DARK};
-            }}
-            QTableWidget::item:selected {{
-                background-color: {Colors.BG_SELECTED};
-                color: {Colors.CYAN};
-                font-weight: 600;
-            }}
+            QTableWidget::item {{ padding: 0px 15px; border-bottom: 1px solid {Colors.BG_DARK}; }}
+            QTableWidget::item:selected {{ background-color: {Colors.BG_SELECTED}; color: {Colors.CYAN}; font-weight: 600; }}
             QHeaderView::section {{
-                background-color: {Colors.BG_CARD};
-                color: {Colors.TEXT_DIM};
-                font-weight: 800;
-                font-size: 11px;
-                padding: 12px;
-                border: none;
-                border-bottom: 2px solid {Colors.BORDER_LT};
-                text-transform: uppercase;
+                background-color: {Colors.BG_CARD}; color: {Colors.TEXT_DIM};
+                font-weight: 800; font-size: 11px; padding: 12px 8px; border: none;
+                border-bottom: 2px solid {Colors.BORDER_LT}; text-transform: uppercase;
             }}
         """)
         self._table.itemDoubleClicked.connect(self._on_item_double_clicked)
-        layout.addWidget(self._table, 1)
+
 
         # ── Footer ──
         footer_lay = QHBoxLayout()
         self._lbl_footer = QLabel("Hiển thị 0 học viên")
-        self._lbl_footer.setStyleSheet(f"font-size: 13px; font-weight: 600; color: {Colors.TEXT_DIM};")
+        self._lbl_footer.setStyleSheet(f"font-size: 14px; font-weight: 600; color: {Colors.TEXT_DIM};")
         footer_lay.addWidget(self._lbl_footer)
         footer_lay.addStretch()
         
         lbl_hint = QLabel("💡 Mẹo: Nhấn đúp vào hàng để xem chi tiết")
-        lbl_hint.setStyleSheet(f"font-size: 12px; color: {Colors.TEXT_DARK}; font-style: italic;")
+        lbl_hint.setStyleSheet(f"font-size: 13px; color: {Colors.TEXT_DARK}; font-style: italic; font-family: 'Segoe UI';")
         footer_lay.addWidget(lbl_hint)
         
         layout.addLayout(footer_lay)
 
-        # Tự động tải dữ liệu
         QTimer.singleShot(100, self.load_students)
 
     def load_students(self):
@@ -222,33 +199,40 @@ class StudentsPage(QWidget):
 
     def _render_table(self, students: list):
         self._table.setRowCount(0)
-        self._displayed_students = students # Lưu lại để tham chiếu ID khi click
+        self._displayed_students = students
         self._lbl_footer.setText(f"Hiển thị {len(students)} / {len(self._all_students)} học viên")
 
         for row, s in enumerate(students):
             self._table.insertRow(row)
-            self._table.setRowHeight(row, 75) # Tăng độ cao hàng để cell widget không bị cắt mấp mé
+            self._table.setRowHeight(row, 55)
 
-            # 1. Mã HV (Căn giữa, Font đậm)
+            # Mã HV 
             item_code = QTableWidgetItem(s.student_code)
             item_code.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item_code.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
+            item_code.setFont(QFont("Segoe UI", 11, QFont.Weight.Bold))
             self._table.setItem(row, 0, item_code)
 
-            # 2. Họ Tên
+            # Họ Tên
             self._table.setItem(row, 1, QTableWidgetItem(s.full_name))
 
-            # 3. Lớp
-            item_class = QTableWidgetItem(s.class_name or "Chưa xếp lớp")
+            # Lớp
+            item_class = QTableWidgetItem(s.class_name or "—")
             item_class.setForeground(QColor(Colors.TEXT_DIM if not s.class_name else Colors.TEXT))
+            item_class.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 2, item_class)
 
-            # 4. Giới tính
+            # Giới tính
             item_gender = QTableWidgetItem(s.gender or "—")
             item_gender.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 3, item_gender)
 
-            # 5. Badge Trạng thái khuôn mặt
+            # Phòng ở
+            room_val = getattr(s, 'room', getattr(s, 'room_name', "—"))
+            item_room = QTableWidgetItem(str(room_val) if room_val else "—")
+            item_room.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 4, item_room)
+
+            # ── TRẠNG THÁI KHUÔN MẶT ──
             status_widget = QWidget()
             status_widget.setStyleSheet("background: transparent;")
             status_lay = QHBoxLayout(status_widget)
@@ -257,61 +241,76 @@ class StudentsPage(QWidget):
             
             enrolled = s.face_enrolled
             badge = QLabel("ĐÃ ĐĂNG KÝ" if enrolled else "CHƯA CÓ MẶT")
-            badge.setStyleSheet(badge_style(Colors.GREEN if enrolled else Colors.TEXT_DARK))
-            badge.setMinimumWidth(125)
-            badge.setMinimumHeight(32)
+            badge.setFixedSize(125, 28) # Mở rộng bề ngang cho chữ thoải mái
             badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            
+            if enrolled:
+                badge.setStyleSheet("background-color: #E8F5E9; color: #2E7D32; border-radius: 4px; font-weight: bold; font-size: 11px;")
+            else:
+                badge.setStyleSheet("background-color: #FFF3E0; color: #E65100; border-radius: 4px; font-weight: bold; font-size: 11px;")
+            
             status_lay.addWidget(badge)
-            self._table.setCellWidget(row, 4, status_widget)
+            self._table.setCellWidget(row, 5, status_widget)
 
-            # 6. Ngày tạo
+            # Ngày tạo
             date_val = s.created_at.strftime("%d/%m/%Y") if hasattr(s, 'created_at') and s.created_at else "—"
             item_date = QTableWidgetItem(date_val)
             item_date.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self._table.setItem(row, 5, item_date)
+            item_date.setForeground(QColor(Colors.TEXT_DIM))
+            self._table.setItem(row, 6, item_date)
 
-            # 7. Nhóm nút Thao tác
+            # ── NÚT THAO TÁC ──
             action_widget = QWidget()
             action_widget.setStyleSheet("background: transparent;")
             action_lay = QHBoxLayout(action_widget)
-            action_lay.setContentsMargins(10, 4, 10, 4) # Giảm margin dọc
+            action_lay.setContentsMargins(0, 0, 0, 8) # Thêm lề dưới 8px để đẩy nút lên trên
+            action_lay.setSpacing(10)
             action_lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            action_lay.setSpacing(8)
 
-            # Nút Đăng ký/Cập nhật
-            btn_edit = QPushButton("📷 ĐĂNG KÝ" if not enrolled else "🔄 CẬP NHẬT")
+            btn_edit = QPushButton("CẬP NHẬT" if enrolled else "ĐĂNG KÝ")
             btn_edit.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_edit.setMinimumHeight(34)
+            btn_edit.setFixedSize(100, 32) # Độ cao 32px để cân đối
             btn_edit.setStyleSheet(f"""
                 QPushButton {{
-                    background: {Colors.CYAN if not enrolled else Colors.BG_HOVER};
+                    background: {Colors.CYAN if not enrolled else "transparent"};
                     color: {"white" if not enrolled else Colors.CYAN};
                     border: 1px solid {Colors.CYAN}; border-radius: 6px;
-                    font-size: 11px; font-weight: 800; padding: 5px 12px;
+                    font-size: 11px; font-weight: 800;
+                    padding: 0px; margin: 0px;
                 }}
-                QPushButton:hover {{ background: {Colors.CYAN_DIM}; color: white; }}
+                QPushButton:hover {{ background: {Colors.CYAN}; color: white; }}
             """)
             btn_edit.clicked.connect(lambda _, sid=s.student_id: self.go_to_enroll.emit(sid))
             
-            # Nút Xóa
             btn_del = QPushButton("🗑️")
             btn_del.setToolTip("Xóa học viên")
             btn_del.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn_del.setMinimumHeight(34)
-            btn_del.setMinimumWidth(36)
+            btn_del.setFixedSize(32, 32)
             btn_del.setStyleSheet(f"""
                 QPushButton {{
-                    background: transparent; color: {Colors.RED};
-                    border: 1px solid {Colors.RED}44; border-radius: 6px;
-                    font-size: 15px; padding: 4px;
+                    background: #FFF5F5; color: {Colors.RED};
+                    border: 1px solid #FFEBEB; border-radius: 6px; font-size: 15px;
+                    padding: 0px; margin: 0px;
                 }}
-                QPushButton:hover {{ background: {Colors.RED}; color: white; }}
+                QPushButton:hover {{ background: #FFEBEE; border-color: {Colors.RED}; }}
             """)
             btn_del.clicked.connect(lambda _, sid=s.student_id, name=s.full_name: self._on_delete_student(sid, name))
 
             action_lay.addWidget(btn_edit)
             action_lay.addWidget(btn_del)
-            self._table.setCellWidget(row, 6, action_widget)
+            self._table.setCellWidget(row, 7, action_widget)
+
+
+        # ── Cấu hình Header và Độ rộng (Thiết lập sau khi đổ dữ liệu để đảm bảo hiệu lực) ──
+        header = self._table.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(80)
+        
+        # Độ rộng mong muốn cho từng cột
+        widths = [100, 250, 120, 100, 120, 180, 140, 220]
+        for i, w in enumerate(widths):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
+            self._table.setColumnWidth(i, w)
 
     def _on_item_double_clicked(self, item):
         """Xử lý double click vào hàng để mở trang đăng ký/cập nhật."""

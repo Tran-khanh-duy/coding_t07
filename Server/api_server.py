@@ -16,6 +16,7 @@ Khởi động:
 import uvicorn
 import base64
 import threading
+import os
 from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional, Any
@@ -58,6 +59,24 @@ sys.path.insert(0, str(Path(__file__).parent))
 from services.embedding_cache_manager import cache_manager
 from database.repositories import student_repo, record_repo, session_repo, embedding_repo, class_repo, camera_repo
 from database.connection import get_db
+
+# ── Telegram Helper ──────────────────────────
+def send_telegram_msg(message: str):
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        logger.warning(f"⚠️ Telegram chưa được cấu hình (Token: {'OK' if token else 'Thiếu'}, ChatID: {'OK' if chat_id else 'Thiếu'})")
+        return
+    try:
+        import requests
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        resp = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=5)
+        if resp.ok:
+            logger.info("📩 Đã gửi thông báo Telegram")
+        else:
+            logger.error(f"❌ Telegram API trả về lỗi {resp.status_code}: {resp.text}")
+    except Exception as e:
+        logger.error(f"Lỗi gửi Telegram: {e}")
 from config import ai_config, WOL_MINI_PCS, FLOOR_CLASS_MAPPING
 from services.wol_service import wol_service, MiniPCDevice
 
@@ -612,8 +631,10 @@ async def receive_attendance(
             full_name = cache.full_names[best_idx]
             class_name = cache.class_names[best_idx]
             class_id = cache.class_ids[best_idx]
+            
+            logger.info(f"🔍 [ATTEND] Nhận diện: {full_name} ({student_code}) | Score: {best_score:.3f} | Thresh: {ai_config.recognition_threshold}")
 
-            # Điểm danh luôn vào session đang mở của Server
+            # Điểm danh vào session đang active theo system_state
             session_id = system_state.session_id
             active_session = None
             
@@ -621,23 +642,21 @@ async def receive_attendance(
                 active_session = session_repo.get_by_id(session_id)
                 if active_session and active_session.status != "ACTIVE":
                     active_session = None
-            
-            # Fallback: Nếu system_state chưa có session_id (ví dụ server restart)
-            # → tìm session ACTIVE mới nhất trong DB
+
             if not active_session:
-                all_sessions = session_repo.get_all(limit=10)
+                # Tìm session ACTIVE duy nhất trong DB (nếu có)
+                all_sessions = session_repo.get_all(limit=5)
                 active_list = [s for s in all_sessions if s.status == "ACTIVE"]
                 if active_list:
-                    # Lấy session mới nhất (ID lớn nhất)
-                    active_session = max(active_list, key=lambda s: s.session_id)
+                    active_session = active_list[0]
                     system_state.session_id = active_session.session_id
-                    logger.info(f"🔄 Auto-recover session_id={active_session.session_id} từ DB")
+                    logger.info(f"📡 Đồng bộ Session ID từ Database: {active_session.session_id}")
             
             if not active_session:
-                logger.warning(f"⚠️ Nhận diện [{student_code}] {full_name} nhưng chưa có phiên điểm danh nào đang mở!")
+                logger.warning(f"⚠️ [REJECT] {full_name}: Không tìm thấy phiên điểm danh nào đang mở (ACTIVE)!")
                 return AttendanceResponse(
                     status="no_session",
-                    message="Không có phiên điểm danh đang mở cho lớp này",
+                    message="Vui lòng nhấn 'Bắt đầu điểm danh' trên giao diện Server",
                     student_code=student_code,
                     full_name=full_name,
                     class_name=class_name,
@@ -649,6 +668,7 @@ async def receive_attendance(
             # Kiểm tra đã điểm danh chưa
             already = record_repo.is_already_recorded(session_id, student_id)
             if already:
+                logger.warning(f"⏩ [SKIP] {full_name} đã điểm danh trước đó trong Session {session_id}")
                 return AttendanceResponse(
                     status="duplicate",
                     message="Đã điểm danh rồi",
@@ -673,6 +693,11 @@ async def receive_attendance(
                     f"✅ Đã điểm danh: [{student_code}] {full_name} "
                     f"(Score: {best_score:.2f}) | Session: {session_id}"
                 )
+                
+                # Gửi Telegram (Async)
+                msg = f"✅ ĐIỂM DANH THÀNH CÔNG\n👤 Học viên: {full_name}\n🆔 MSSV: {student_code}\n🏫 Lớp: {class_name}\n🕒 Thời gian: {datetime.now().strftime('%H:%M:%S')}\n🎯 Độ tin cậy: {best_score*100:.1f}%"
+                threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
+                
                 return AttendanceResponse(
                     status="success",
                     message="Điểm danh thành công",
@@ -683,9 +708,10 @@ async def receive_attendance(
                     session_id=session_id,
                 )
             else:
+                logger.error(f"❌ Lỗi ghi DB cho {full_name}")
                 return AttendanceResponse(status="error", message="Lỗi khi ghi vào Database")
         else:
-            logger.warning(f"❌ Người lạ (Score cao nhất: {best_score:.2f})")
+            logger.warning(f"❌ Người lạ (Score cao nhất: {best_score:.3f} < {ai_config.recognition_threshold}) | Tên dự đoán: {cache.full_names[best_idx] if not cache.is_empty else 'N/A'}")
             return AttendanceResponse(
                 status="unknown",
                 message=f"Không nhận diện được (Score: {best_score:.2f})",

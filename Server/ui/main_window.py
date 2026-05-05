@@ -40,7 +40,6 @@ class LoadingOverlay(QWidget):
         super().__init__(parent)
         # Lớp phủ màu tối bao trùm cửa sổ
         self.setStyleSheet(f"background-color: {Colors.BG_DARK};")
-        
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(20)
@@ -143,6 +142,7 @@ class MainWindow(QMainWindow):
         self._setup_window()
         self._build_layout()
         self._start_init()
+        self.showMaximized()
 
     def _setup_window(self):
         self.setWindowTitle("FaceAttend AI")

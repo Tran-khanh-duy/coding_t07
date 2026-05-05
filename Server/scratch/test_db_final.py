@@ -9,7 +9,7 @@ sys.path.insert(0, str(BASE_DIR))
 
 try:
     from config import db_config
-    print(f"Loaded config: Server={db_config.server}, DB={db_config.database}")
+    print(f"Loaded config: Server={db_config.host}, DB={db_config.database}")
 except Exception as e:
     print(f"Failed to load config: {e}")
     sys.exit(1)

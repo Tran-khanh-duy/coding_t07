@@ -415,22 +415,10 @@ class FaceEngine:
         t_rec_start = time.perf_counter()
         results = self.recognize_batch(detected, cache)
         
-        # 3. Check Anti-Spoofing cho từng khuôn mặt (Nếu có sẵn)
-        for i, res in enumerate(results):
-            if ANTI_SPOOF_AVAILABLE:
-                try:
-                    is_real, s_score = anti_spoof_service.is_real(frame, res.bbox)
-                    res.is_real = is_real
-                    res.spoof_score = s_score
-                    if not is_real:
-                        logger.warning(f"Phát hiện SPOOF! Score: {s_score:.3f}")
-                except Exception as e:
-                    logger.debug(f"Lỗi runtime Anti-Spoofing: {e}")
-                    res.is_real = True 
-            else:
-                # Chế độ dự phòng: Mặc định là thật
-                res.is_real = True
-                res.spoof_score = 1.0
+        # Anti-Spoofing check has been moved to AttendanceService to run ONLY during check-in
+        for r in results:
+            r.is_real = True
+            r.spoof_score = 1.0
 
         # Cập nhật thông số thời gian xử lý cho từng khuôn mặt
         t_rec_elapsed = (time.perf_counter() - t_rec_start) * 1000

@@ -144,9 +144,9 @@ class SettingsPage(QWidget):
         self.check_gpu.setChecked(ai_config.gpu_ctx_id >= 0)
 
         # DB
-        self.edit_db_server.setText(db_config.server)
+        self.edit_db_server.setText(db_config.host)
         self.edit_db_name.setText(db_config.database)
-        self.check_win_auth.setChecked(db_config.use_windows_auth)
+        self.check_win_auth.setChecked(False)
 
     def _save_settings(self):
         try:
