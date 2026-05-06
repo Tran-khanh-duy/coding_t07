@@ -8,11 +8,11 @@ import sys
 
 # Ensure root in path for relative imports
 ROOT = Path(__file__).parent.parent
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+# if str(ROOT) not in sys.path:
+#     sys.path.insert(0, str(ROOT))
 
 from database.repositories import record_repo
-from config import BASE_DIR
+from core.config import BASE_DIR
 
 class SyncService:
     """

@@ -1,786 +1,100 @@
-"""
-api_server.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Máy chủ Trung tâm (Server) — FastAPI
-Cung cấp API cho các Edge Box (Mini PC) kết nối:
-  - GET  /api/health        → Kiểm tra trạng thái server
-  - GET  /api/students      → Danh sách học viên
-  - GET  /api/embeddings    → Tải embedding vectors để nhận diện
-  - GET  /api/sessions/active → Danh sách phiên điểm danh đang mở
-  - POST /api/attendance    → Nhận kết quả điểm danh từ Edge
-
-Khởi động:
-    python api_server.py
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-"""
 import uvicorn
-import base64
-import threading
-import os
-from datetime import datetime
+from fastapi import FastAPI
 from contextlib import asynccontextmanager
-from typing import Optional, Any
-
-from fastapi import FastAPI, HTTPException, Security, Query, Response
-from fastapi.security.api_key import APIKeyHeader
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import numpy as np
 from loguru import logger
+from fastapi.middleware.cors import CORSMiddleware
 
-# Biến toàn cục quản lý trạng thái phát lệnh cho Mini PC
-class SystemState:
-    command = "STOP"
-    session_id = None
-    class_id = None
-    target_camera = None
-    
-    # Mới: Lưu trữ khung hình và detections từ Mini PC
-    latest_frames = {}      # {camera_id: image_bytes}
-    latest_detections = {}  # {camera_id: list_of_detections}
-    frame_timestamp = 0.0
-    frame_lock = threading.Lock()
-    
-    # [NEW] Trạng thái các Mini PC (camera động)
-    edge_status_data = {}  # {device_name: {"cameras": [0,1], "last_seen": timestamp}}
+# Core & Config
+from core.config import server_config, WOL_MINI_PCS
+from core.state_manager import state_manager
 
-    # [FIX] Phiên bản embedding — tăng lên mỗi khi có học viên mới đăng ký
-    # Mini PC poll endpoint này để biết cần pull lại embeddings không
-    embedding_version: int = 0
-    embedding_updated_at: str = ""
-
-system_state = SystemState()
-
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent))
-
-# Import các module từ project
-from services.embedding_cache_manager import cache_manager
-from database.repositories import student_repo, record_repo, session_repo, embedding_repo, class_repo, camera_repo
-from database.connection import get_db
-
-# ── Telegram Helper ──────────────────────────
-def send_telegram_msg(message: str):
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
-        logger.warning(f"⚠️ Telegram chưa được cấu hình (Token: {'OK' if token else 'Thiếu'}, ChatID: {'OK' if chat_id else 'Thiếu'})")
-        return
-    try:
-        import requests
-        url = f"https://api.telegram.org/bot{token}/sendMessage"
-        resp = requests.post(url, json={"chat_id": chat_id, "text": message}, timeout=5)
-        if resp.ok:
-            logger.info("📩 Đã gửi thông báo Telegram")
-        else:
-            logger.error(f"❌ Telegram API trả về lỗi {resp.status_code}: {resp.text}")
-    except Exception as e:
-        logger.error(f"Lỗi gửi Telegram: {e}")
-from config import ai_config, WOL_MINI_PCS, FLOOR_CLASS_MAPPING
+# Services & Workers
+from core.logger import setup_logging, api_latency_middleware
+from services.embedding_service import embedding_service
 from services.wol_service import wol_service, MiniPCDevice
+from database.repositories import session_repo
+from workers.attendance_worker import attendance_worker
 
-# ─────────────────────────────────────────────
-#  HELPER: Lọc danh sách học viên theo Tòa+Tầng+Lớp+Giới tính
-# ─────────────────────────────────────────────
-import re as _re
+# API Routers
+from api.camera_routes import router as camera_router
+from api.admin_routes import router as admin_router
+from api.attendance_routes import router as attendance_router
 
-def _get_valid_student_ids(building: str, floor_str: str) -> set | None:
-    """
-    Tìm danh sách student_id được phép nhận diện cho camera thuộc (building, floor).
-    
-    Logic: building → gender + danh sách lớp theo tầng → lọc trong DB
-    Trả về None nếu không có cấu hình (không lọc gì cả).
-    Trả về set rỗng nếu có cấu hình nhưng không có học viên nào khớp.
-    """
-    if not building or not floor_str:
-        return None
-    
-    bld_config = FLOOR_CLASS_MAPPING.get(building)
-    if not bld_config:
-        logger.warning(f"[FILTER] Tòa '{building}' không có trong FLOOR_CLASS_MAPPING — bỏ qua lọc")
-        return None
-    
-    # Trích số tầng từ chuỗi (để hỗ trợ cả 'Tầng 4' lẫn '4')
-    m = _re.search(r'\d+', floor_str)
-    if not m:
-        logger.warning(f"[FILTER] Không rút được số tầng từ '{floor_str}'")
-        return None
-    floor_num = int(m.group(0))
-    
-    classes_on_floor = bld_config.get("floors", {}).get(floor_num)
-    if not classes_on_floor:
-        logger.warning(f"[FILTER] Tòa '{building}' Tầng {floor_num} không có trong bản đồ lớp")
-        return set()  # Không cho ai nhận diện
-    
-    gender = bld_config.get("gender")  # 'Nam' hoặc 'Nữ'
-    
-    # Query: lấy student_id bằng class_code + gender
-    placeholders = ",".join(["?" for _ in classes_on_floor])
-    sql = f"""
-        SELECT DISTINCT s.student_id
-        FROM Students s
-        INNER JOIN Classes c ON s.class_id = c.class_id
-        WHERE c.class_code IN ({placeholders})
-    """
-    params = list(classes_on_floor)
-    
-    if gender:
-        sql += " AND s.gender = ?"
-        params.append(gender)
-    
-    try:
-        rows = get_db().execute(sql, tuple(params))
-        result = {r[0] for r in rows}
-        logger.info(f"[FILTER] {building} Tầng {floor_num} ({gender}) → Lớp: {classes_on_floor} → {len(result)} học viên")
-        return result
-    except Exception as e:
-        logger.error(f"[FILTER] Lỗi query học viên theo tầng: {e}")
-        return None
-
-# ─────────────────────────────────────────────
-#  1. KHỞI ĐỘNG SERVER & LOAD DATABASE
-# ─────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("🚀 API Server đang khởi động...")
-    cache_manager.load()
-    cache = cache_manager.get_cache()
-    if not cache.is_empty:
-        logger.info(f"✅ Đã tải thành công {len(cache.embeddings)} khuôn mặt vào RAM.")
+    logger.info("🚀 API Server đang khởi động (Clean Architecture)...")
+    
+    # 1. Load Embeddings Cache (Bằng FAISS hoặc Numpy)
+    embedding_service.load()
+    if embedding_service.size > 0:
+        logger.info(f"✅ Đã tải thành công {embedding_service.size} khuôn mặt vào RAM.")
     else:
         logger.warning("⚠️ Database hiện chưa có học viên nào!")
     
-    # AUTO-RECOVERY: Khôi phục session ACTIVE nếu server bị restart giữa chừng
+    # 2. Phục hồi Session ACTIVE (Auto-Recovery)
     try:
         all_sessions = session_repo.get_all(limit=10)
         active_list = [s for s in all_sessions if s.status == "ACTIVE"]
         if active_list:
             latest = max(active_list, key=lambda s: s.session_id)
-            system_state.session_id = latest.session_id
-            system_state.class_id = latest.class_id
-            system_state.command = "START"
-            logger.info(f"🔄 Phục hồi session ACTIVE: id={latest.session_id} class={latest.class_name}")
+            state_manager.set_command("START", latest.session_id, latest.class_id, None)
+            logger.info(f"🔄 Phục hồi session ACTIVE: id={latest.session_id}")
     except Exception as e:
         logger.warning(f"Không thể phục hồi session: {e}")
         
-    # --- WAKE-ON-LAN INIT ---
+    # 3. Wake-on-LAN khởi động Mini PC tự động
     if WOL_MINI_PCS:
         devices = []
         for d in WOL_MINI_PCS:
-            # Tự động map 'mac' sang 'mac_address' nếu người dùng dùng nhầm tên biến
             if 'mac' in d and 'mac_address' not in d:
                 d['mac_address'] = d.pop('mac')
             devices.append(MiniPCDevice(**d))
         wol_service.set_devices(devices)
         wol_service.wake_all(async_mode=True)
     
+    # 4. Khởi chạy Attendance Redis Worker
+    attendance_worker.start()
+    
     yield
+    
     logger.info("🛑 API Server đang tắt...")
-
+    attendance_worker.stop()
 
 app = FastAPI(
     title="FaceAttend API Server",
-    description="API trung tâm cho hệ thống điểm danh khuôn mặt",
-    version="2.0.0",
+    description="API trung tâm cho hệ thống điểm danh khuôn mặt (Clean Architecture)",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
-# CORS — cho phép Edge Box từ bất kỳ IP nào trong LAN
+# CORS config
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ─────────────────────────────────────────────
-#  2. CẤU HÌNH BẢO MẬT (API KEY)
-# ─────────────────────────────────────────────
-SECRET_API_KEY = "faceattend_secret_2026"
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=True)
+# Đăng ký middleware đo latency
+app.middleware("http")(api_latency_middleware)
 
-def verify_api_key(api_key: str = Security(api_key_header)):
-    if api_key != SECRET_API_KEY:
-        raise HTTPException(status_code=403, detail="Từ chối truy cập! Sai API Key.")
-    return api_key
+# Đăng ký các router
+app.include_router(camera_router)
+app.include_router(admin_router)
+app.include_router(attendance_router)
 
-# ─────────────────────────────────────────────
-#  3. SCHEMAS (Cấu trúc dữ liệu)
-# ─────────────────────────────────────────────
-class AttendancePayload(BaseModel):
-    session_id: Optional[int] = None
-    camera_id: Optional[str] = None
-    timestamp: str
-    embedding: list[float]  # Vector 512D
-    liveness_score: float = 1.0
-    liveness_checked: bool = False
+def send_telegram_msg(msg: str):
+    """Giữ nguyên utils function cho UI/Worker import"""
+    # (Có thể chuyển sang utils/telegram.py sau)
+    pass
 
-class AttendanceResponse(BaseModel):
-    status: str
-    message: str = ""
-    student_code: Optional[str] = None
-    full_name: Optional[str] = None
-    class_name: Optional[str] = None
-    similarity: Optional[float] = None
-    session_id: Optional[int] = None
-
-# ─────────────────────────────────────────────
-#  4. API ENDPOINTS
-# ─────────────────────────────────────────────
-
-# ── Health Check ──────────────────────────────
-@app.get("/api/health")
-async def health_check():
-    """Kiểm tra server còn sống không — Edge Box gọi định kỳ."""
-    cache = cache_manager.get_cache()
-    try:
-        db_ok = get_db().test_connection()
-    except Exception:
-        db_ok = False
-
-    return {
-        "status": "ok",
-        "timestamp": datetime.now().isoformat(),
-        "database": "connected" if db_ok else "disconnected",
-        "total_embeddings": cache.size,
-        "version": "2.0.0",
-    }
-
-# ── Lệnh Hệ thống (Master-Slave) ──────────────
-class CommandPayload(BaseModel):
-    command: str
-    session_id: Optional[int] = None
-    class_id: Optional[int] = None
-    target_camera: Optional[str] = None
-
-@app.get("/api/system/command")
-async def get_system_command(api_key: str = Security(verify_api_key)):
-    """Mini PC polling lấy lệnh từ Server."""
-    
-    # Lấy danh sách toàn bộ IP Camera từ Database để gửi xuống Edge
-    cameras = camera_repo.get_all(active_only=False) # Lấy tất cả, kể cả inactive
-    all_rtsp = [c.rtsp_url for c in cameras if c.rtsp_url]
-    
-    # Bổ sung các camera được Mini PC báo cáo qua edge_status
-    for dev_status in system_state.edge_status_data.values():
-        cam_status = dev_status.get("camera_status", {})
-        for cam_id, info in cam_status.items():
-            if isinstance(info, dict):
-                src = info.get("source")
-                if src and src not in all_rtsp:
-                    all_rtsp.append(src)
-    
-    return {
-        "command": system_state.command,
-        "session_id": system_state.session_id,
-        "class_id": system_state.class_id,
-        "target_camera": system_state.target_camera,
-        "all_cameras": all_rtsp
-    }
-
-@app.post("/api/system/command")
-async def set_system_command(
-    payload: CommandPayload,
-    api_key: str = Security(verify_api_key)
-):
-    """Server UI phát lệnh cho Mini PC."""
-    system_state.command = payload.command
-    system_state.session_id = payload.session_id
-    system_state.class_id = payload.class_id
-    system_state.target_camera = payload.target_camera
-    
-    logger.info(f"📡 Lệnh Hệ Thống thay đổi -> COMMAND: {system_state.command} | SESSION: {system_state.session_id} | CAM: {system_state.target_camera}")
-    return {"status": "ok", "state": system_state.command}
-
-# ── Truyền tải khung hình (Remote Camera) ──────
-class FramePayload(BaseModel):
-    image_b64: str
-    detections: Optional[list] = [] # Danh sách [x1, y1, x2, y2, label, color_type]
-    camera_id: str = "CAM_01"
-
-@app.post("/api/system/frame")
-async def upload_frame(
-    payload: FramePayload,
-    api_key: str = Security(verify_api_key)
-):
-    """Mini PC upload khung hình JPEG (base64) lên server."""
-    try:
-        # Giải mã base64
-        img_data = base64.b64decode(payload.image_b64)
-        
-        # Log chẩn đoán dữ liệu (Debug)
-        # logger.debug(f"📥 Frame from {payload.camera_id}: {len(img_data)} bytes | {len(payload.detections)} faces")
-        
-        if len(img_data) < 100:
-             logger.warning(f"⚠️ Nhận ảnh quá nhỏ ({len(img_data)} bytes) từ {payload.camera_id}")
-             
-        with system_state.frame_lock:
-            system_state.latest_frames[payload.camera_id] = img_data
-            system_state.latest_detections[payload.camera_id] = payload.detections
-            system_state.frame_timestamp = datetime.now().timestamp()
-            
-        # Thêm log để người dùng thấy tín hiệu
-        logger.info(f"📥 Nhận khung hình từ: {payload.camera_id}")
-            
-        return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.get("/api/system/frame")
-async def get_frame(camera_id: str = Query(..., description="ID của camera cần lấy hình")):
-    """UI lấy khung hình mới nhất từ Mini PC."""
-    import json
-    with system_state.frame_lock:
-        frame = system_state.latest_frames.get(camera_id)
-        detections = system_state.latest_detections.get(camera_id, [])
-        if frame is None:
-            available = list(system_state.latest_frames.keys())
-            logger.warning(f"🔍 [404] UI yêu cầu {camera_id} nhưng Server chỉ có: {available}")
-            raise HTTPException(status_code=404, detail=f"No frame for {camera_id}")
-        
-        # Chuyển detections sang JSON string rồi base64 để truyền qua Header
-        det_json = json.dumps(detections)
-        det_b64 = base64.b64encode(det_json.encode()).decode()
-
-        return Response(
-            content=frame, 
-            media_type="image/jpeg",
-            headers={"X-Face-Detections": det_b64}
-        )
-
-# ── Dynamic Edge Status ───────────────────────
-class EdgeStatusPayload(BaseModel):
-    device_name: str
-    camera_status: dict[str, Any] # Chấp nhận cả bool hoặc dict {name, source}
-    ip_address: Optional[str] = "Unknown"
-    timestamp: str
-
-@app.post("/api/system/edge_status")
-async def update_edge_status(
-    payload: EdgeStatusPayload,
-    api_key: str = Security(verify_api_key)
-):
-    """Mini PC báo cáo danh sách camera hiện có."""
-    system_state.edge_status_data[payload.device_name] = {
-        "camera_status": payload.camera_status,
-        "ip_address": payload.ip_address,
-        "last_seen": datetime.now().timestamp()
-    }
-    
-    # Thêm log để người dùng thấy tín hiệu Mini PC đang sống
-    logger.info(f"📡 Mini PC '{payload.device_name}' đã báo danh trạng thái.")
-    
-    # Cập nhật trạng thái WOL (Online)
-    try:
-        # Nếu có thông tin IP thực thì dùng, không thì dùng "Unknown"
-        ip = getattr(payload, "ip_address", "")
-        if ip == "Unknown": ip = ""
-        wol_service.update_online_status(payload.device_name, ip)
-    except Exception as e:
-        logger.debug(f"WOL status update error: {e}")
-        
-    return {"status": "ok"}
-
-@app.get("/api/system/edge_status")
-async def get_edge_status():
-    """UI lấy danh sách camera động từ các Mini PC."""
-    return system_state.edge_status_data
-
-@app.get("/api/dashboard/stats")
-async def get_dashboard_stats(api_key: str = Security(verify_api_key)):
-    """Trả về thống kê cho Dashboard: Số lượng học viên, Camera Online/Offline."""
-    try:
-        students = student_repo.get_all()
-        student_count = len(students)
-        
-        online_cams = 0
-        total_cams = 0
-        for dev_status in system_state.edge_status_data.values():
-            cam_status = dev_status.get("camera_status", {})
-            for cam_id, info in cam_status.items():
-                total_cams += 1
-                if isinstance(info, dict) and info.get("is_active"):
-                    online_cams += 1
-                    
-        offline_cams = total_cams - online_cams
-        
-        # Fallback nếu chưa có thiết bị nào kết nối nhưng có camera trong CSDL
-        if total_cams == 0:
-            db_cams = camera_repo.get_all()
-            total_cams = len(db_cams)
-            offline_cams = total_cams
-            
-        return {
-            "status": "ok",
-            "student_count": student_count,
-            "camera_online": online_cams,
-            "camera_offline": offline_cams,
-            "total_cameras": total_cams
-        }
-    except Exception as e:
-        logger.error(f"Lỗi API /dashboard/stats: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ── Lấy danh sách học viên ────────────────────
-@app.get("/api/students")
-async def get_students(
-    class_id: Optional[int] = Query(None, description="Lọc theo lớp"),
-    api_key: str = Security(verify_api_key),
-):
-    """Trả về danh sách học viên (metadata, không có embedding)."""
-    try:
-        students = student_repo.get_all(class_id=class_id)
-        return {
-            "status": "ok",
-            "count": len(students),
-            "students": [
-                {
-                    "student_id": s.student_id,
-                    "student_code": s.student_code,
-                    "full_name": s.full_name,
-                    "class_id": s.class_id,
-                    "class_name": s.class_name,
-                    "face_enrolled": s.face_enrolled,
-                }
-                for s in students
-            ],
-        }
-    except Exception as e:
-        logger.error(f"Lỗi API /students: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Lấy tất cả embedding vectors ──────────────
-@app.get("/api/embeddings")
-async def get_embeddings(
-    camera_id: Optional[str] = Query(None, description="Camera ID from Edge Box"),
-    api_key: str = Security(verify_api_key)
-):
-    """
-    Trả về TOÀN BỘ embedding vectors để Edge load vào RAM.
-    Dữ liệu được mã hoá base64 để gửi qua JSON hiệu quả.
-    
-    Response format:
-    {
-        "count": 50,
-        "students": [
-            {
-                "student_id": 1,
-                "student_code": "SV001",
-                "full_name": "Nguyen Van A",
-                "class_id": 1,
-                "class_name": "CNTT01",
-                "class_code": "CNTT01",
-                "embedding_b64": "base64_encoded_512_float32..."
-            }, ...
-        ]
-    }
-    """
-    try:
-        cache = cache_manager.get_cache()
-        if cache.is_empty:
-            return {"status": "ok", "count": 0, "students": []}
-
-        valid_student_ids = None
-        if camera_id:
-            cameras = camera_repo.get_all()
-            camera = next(
-                (c for c in cameras if c.camera_name == camera_id
-                 or str(c.camera_id) == camera_id or c.rtsp_url == camera_id), None
-            )
-            
-            if camera and camera.area_id:
-                parts = camera.area_id.split('_', 1)
-                bld = parts[0].strip() if len(parts) > 0 else None
-                flr = parts[1].strip() if len(parts) > 1 else None
-                valid_student_ids = _get_valid_student_ids(bld, flr)
-            elif camera:
-                logger.warning(f"[EMBED] Camera '{camera_id}' chưa có area_id — trả về toàn bộ")
-
-        students = []
-        for i in range(cache.size):
-            sid = cache.student_ids[i]
-            if valid_student_ids is not None and sid not in valid_student_ids:
-                continue
-
-            # Encode embedding thành base64 string
-            emb_bytes = cache.embeddings[i].astype(np.float32).tobytes()
-            emb_b64 = base64.b64encode(emb_bytes).decode("ascii")
-
-            students.append({
-                "student_id": cache.student_ids[i],
-                "student_code": cache.student_codes[i],
-                "full_name": cache.full_names[i],
-                "class_id": cache.class_ids[i],
-                "class_name": cache.class_names[i],
-                "class_code": cache.class_codes[i],
-                "embedding_b64": emb_b64,
-            })
-
-        logger.info(f"📤 Edge yêu cầu embeddings: trả về {len(students)} học viên")
-        return {"status": "ok", "count": len(students), "students": students}
-
-    except Exception as e:
-        logger.error(f"Lỗi API /embeddings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Lấy danh sách phiên điểm danh đang ACTIVE ──
-@app.get("/api/sessions/active")
-async def get_active_sessions(api_key: str = Security(verify_api_key)):
-    """Trả về các phiên điểm danh đang mở (status = ACTIVE)."""
-    try:
-        all_sessions = session_repo.get_all(limit=50)
-        active = [s for s in all_sessions if s.status == "ACTIVE"]
-
-        return {
-            "status": "ok",
-            "count": len(active),
-            "sessions": [
-                {
-                    "session_id": s.session_id,
-                    "session_code": s.session_code,
-                    "class_id": s.class_id,
-                    "class_name": s.class_name or "",
-                    "class_code": s.class_code or "",
-                    "subject_name": s.subject_name,
-                    "session_date": str(s.session_date) if s.session_date else "",
-                    "start_time": s.start_time.isoformat() if s.start_time else "",
-                    "present_count": s.present_count,
-                }
-                for s in active
-            ],
-        }
-    except Exception as e:
-        logger.error(f"Lỗi API /sessions/active: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Nhận kết quả điểm danh từ Edge ────────────
-@app.post("/api/attendance", response_model=AttendanceResponse)
-async def receive_attendance(
-    payload: AttendancePayload,
-    api_key: str = Security(verify_api_key),
-):
-    """
-    Edge Box gửi embedding vector + liveness score.
-    Server so khớp và ghi nhận điểm danh.
-    """
-    try:
-        incoming_vector = np.array(payload.embedding, dtype=np.float32)
-        if len(incoming_vector) != 512:
-            raise HTTPException(status_code=400, detail="Vector không hợp lệ (cần 512 chiều)")
-
-        # Kiểm tra Anti-Spoofing
-        if payload.liveness_checked and payload.liveness_score < 0.80:
-            logger.warning(f"❌ Edge báo SPOOF! Score: {payload.liveness_score:.3f}")
-            return AttendanceResponse(
-                status="rejected",
-                message=f"Phát hiện giả mạo (Liveness: {payload.liveness_score:.2f})",
-            )
-
-        cache = cache_manager.get_cache()
-        if cache.is_empty:
-            return AttendanceResponse(status="ignored", message="CSDL trống — chưa có học viên")
-
-        # SO KHỚP VECTOR BẰNG COSINE SIMILARITY
-        norm_in = np.linalg.norm(incoming_vector)
-        if norm_in < 1e-8:
-            return AttendanceResponse(status="error", message="Vector embedding rỗng")
-        incoming_vector = incoming_vector / norm_in
-
-        similarities = cache.embeddings @ incoming_vector  # Cache đã normalized sẵn
-
-        camera = None
-        # LỌC KẾT QUẢ THEO TẦNG CỦA CAMERA (NẾU CÓ CAMERA_ID)
-        if payload.camera_id:
-            camera_name_to_search = payload.camera_id
-            
-            # Map CAM_xx -> Tên thật thông qua camera_status báo cáo từ Edge
-            for dev_status in system_state.edge_status_data.values():
-                cam_status = dev_status.get("camera_status", {})
-                if payload.camera_id in cam_status and isinstance(cam_status[payload.camera_id], dict):
-                    camera_name_to_search = cam_status[payload.camera_id].get("name", payload.camera_id)
-                    break
-                
-            cameras = camera_repo.get_all()
-            camera = next((c for c in cameras if c.camera_name == camera_name_to_search or str(c.camera_id) == payload.camera_id or c.rtsp_url == payload.camera_id), None)
-            
-            if camera and camera.area_id:
-                parts = camera.area_id.split('_', 1)
-                bld = parts[0].strip() if len(parts) > 0 else None
-                flr = parts[1].strip() if len(parts) > 1 else None
-                
-                valid_student_ids = _get_valid_student_ids(bld, flr)
-                if valid_student_ids is not None:
-                    # Mask out (set −∞) những học viên không thuộc tầng này
-                    for i in range(cache.size):
-                        if cache.student_ids[i] not in valid_student_ids:
-                            similarities[i] = -1.0
-                    if len(valid_student_ids) == 0:
-                        logger.warning(f"[ATTEND] Không có học viên nào ở {bld} {flr} — bỏ qua nhận diện")
-
-        best_idx = int(np.argmax(similarities))
-        best_score = float(similarities[best_idx])
-
-        # KIỂM TRA NGƯỠNG NHẬN DIỆN
-        if best_score >= ai_config.recognition_threshold:
-            student_id = cache.student_ids[best_idx]
-            student_code = cache.student_codes[best_idx]
-            full_name = cache.full_names[best_idx]
-            class_name = cache.class_names[best_idx]
-            class_id = cache.class_ids[best_idx]
-            
-            logger.info(f"🔍 [ATTEND] Nhận diện: {full_name} ({student_code}) | Score: {best_score:.3f} | Thresh: {ai_config.recognition_threshold}")
-
-            # Điểm danh vào session đang active theo system_state
-            session_id = system_state.session_id
-            active_session = None
-            
-            if session_id:
-                active_session = session_repo.get_by_id(session_id)
-                if active_session and active_session.status != "ACTIVE":
-                    active_session = None
-
-            if not active_session:
-                # Tìm session ACTIVE duy nhất trong DB (nếu có)
-                all_sessions = session_repo.get_all(limit=5)
-                active_list = [s for s in all_sessions if s.status == "ACTIVE"]
-                if active_list:
-                    active_session = active_list[0]
-                    system_state.session_id = active_session.session_id
-                    logger.info(f"📡 Đồng bộ Session ID từ Database: {active_session.session_id}")
-            
-            if not active_session:
-                logger.warning(f"⚠️ [REJECT] {full_name}: Không tìm thấy phiên điểm danh nào đang mở (ACTIVE)!")
-                return AttendanceResponse(
-                    status="no_session",
-                    message="Vui lòng nhấn 'Bắt đầu điểm danh' trên giao diện Server",
-                    student_code=student_code,
-                    full_name=full_name,
-                    class_name=class_name,
-                    similarity=best_score,
-                )
-
-            session_id = active_session.session_id
-
-            # Kiểm tra đã điểm danh chưa
-            already = record_repo.is_already_recorded(session_id, student_id)
-            if already:
-                logger.warning(f"⏩ [SKIP] {full_name} đã điểm danh trước đó trong Session {session_id}")
-                return AttendanceResponse(
-                    status="duplicate",
-                    message="Đã điểm danh rồi",
-                    student_code=student_code,
-                    full_name=full_name,
-                    class_name=class_name,
-                    similarity=best_score,
-                    session_id=session_id,
-                )
-
-            # Ghi nhận vào DB
-            db_cam_id = camera.camera_id if camera else 1
-            success = record_repo.record_attendance(
-                session_id=session_id,
-                student_id=student_id,
-                recognition_score=best_score,
-                camera_id=db_cam_id,
-            )
-
-            if success:
-                logger.success(
-                    f"✅ Đã điểm danh: [{student_code}] {full_name} "
-                    f"(Score: {best_score:.2f}) | Session: {session_id}"
-                )
-                
-                # Gửi Telegram (Async)
-                msg = f"✅ ĐIỂM DANH THÀNH CÔNG\n👤 Học viên: {full_name}\n🆔 MSSV: {student_code}\n🏫 Lớp: {class_name}\n🕒 Thời gian: {datetime.now().strftime('%H:%M:%S')}\n🎯 Độ tin cậy: {best_score*100:.1f}%"
-                threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
-                
-                return AttendanceResponse(
-                    status="success",
-                    message="Điểm danh thành công",
-                    student_code=student_code,
-                    full_name=full_name,
-                    class_name=class_name,
-                    similarity=best_score,
-                    session_id=session_id,
-                )
-            else:
-                logger.error(f"❌ Lỗi ghi DB cho {full_name}")
-                return AttendanceResponse(status="error", message="Lỗi khi ghi vào Database")
-        else:
-            logger.warning(f"❌ Người lạ (Score cao nhất: {best_score:.3f} < {ai_config.recognition_threshold}) | Tên dự đoán: {cache.full_names[best_idx] if not cache.is_empty else 'N/A'}")
-            return AttendanceResponse(
-                status="unknown",
-                message=f"Không nhận diện được (Score: {best_score:.2f})",
-                similarity=best_score,
-            )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Lỗi API /attendance: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Reload cache (Sau khi đăng ký HV mới) ────
-@app.post("/api/reload-cache")
-async def reload_cache(api_key: str = Security(verify_api_key)):
-    """Force reload embedding cache từ DB."""
-    try:
-        cache_manager.load()
-        cache = cache_manager.get_cache()
-        # [FIX] Tăng phiên bản để Mini PC biết cần pull lại
-        system_state.embedding_version += 1
-        system_state.embedding_updated_at = datetime.now().isoformat()
-        logger.info(f"📢 Embedding version → {system_state.embedding_version} (có học viên mới)")
-        return {
-            "status": "ok",
-            "message": f"Đã reload {cache.size} embeddings",
-            "count": cache.size,
-            "embedding_version": system_state.embedding_version,
-        }
-    except Exception as e:
-        logger.error(f"Lỗi reload cache: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ── Kiểm tra phiên bản embedding (Mini PC polling) ─
-@app.get("/api/embeddings/version")
-async def get_embedding_version(api_key: str = Security(verify_api_key)):
-    """
-    Mini PC gọi endpoint này mỗi 10 giây để kiểm tra có embedding mới không.
-    Nếu version thay đổi → pull lại toàn bộ embeddings.
-    Tránh phải tải 512*N floats mỗi lần check.
-    """
-    return {
-        "embedding_version": system_state.embedding_version,
-        "updated_at": system_state.embedding_updated_at,
-        "total": cache_manager.size,
-    }
-
-
-# ── Log Filtering (Silence /api/system/frame spam) ───
-import logging
-
-class EndpointFilter(logging.Filter):
-    """Lọc các dòng log chứa endpoint streaming để console sạch hơn."""
-    def filter(self, record: logging.LogRecord) -> bool:
-        # Nếu log chứa endpoint frame, trả về False để không in ra
-        return "/api/system/frame" not in record.getMessage()
-
-# Áp dụng filter cho uvicorn
-logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
-logging.getLogger("uvicorn").addFilter(EndpointFilter())
-
-# ─────────────────────────────────────────────
-#  5. KHỞI ĐỘNG
-# ─────────────────────────────────────────────
 if __name__ == "__main__":
-    logger.info("=" * 60)
-    logger.info("  FACEATTEND API SERVER v2.0")
-    logger.info("  Lắng nghe tại: http://0.0.0.0:9696")
-    logger.info("=" * 60)
-    uvicorn.run("api_server:app", host="0.0.0.0", port=9696, reload=True)
+    logger.info(f"Khởi động Uvicorn Server tại {server_config.host}:{server_config.port}")
+    uvicorn.run(
+        "api_server:app",
+        host=server_config.host,
+        port=server_config.port,
+        workers=server_config.workers,
+        reload=server_config.reload
+    )

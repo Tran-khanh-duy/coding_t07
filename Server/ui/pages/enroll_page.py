@@ -93,19 +93,28 @@ class CaptureWorker(QThread):
                 has_face = len(faces) > 0
                 self.face_detected.emit(has_face)
 
-            # Lưu frame GỐC cho embedding
-            # Lưu frame GỐC cho embedding tốc độ cao
+            # Lưu frame đã RESIZE cho embedding (Tiết kiệm RAM cực lớn)
             if self._capturing and has_face:
                 now = time.time()
-                # Gia tăng interval lên 0.45s 1 ảnh để người dùng có thời gian quay góc chéo/cúi đầu
-                if now - self._last_capture_time >= 0.45:
-                    self._frames.append(frame.copy())
+                if now - self._last_capture_time >= 0.5:
+                    # Resize xuống 640p trước khi lưu vào RAM
+                    h_orig, w_orig = frame.shape[:2]
+                    capture_scale = 640 / max(h_orig, w_orig)
+                    small_frame = cv2.resize(frame, (int(w_orig * capture_scale), int(h_orig * capture_scale)))
+                    
+                    self._frames.append(small_frame)
                     self._last_capture_time = now
                     count = len(self._frames)
                     self.photo_taken.emit(count, self.target_count)
+                    
                     if count >= self.target_count:
                         self._capturing = False
-                        self.capture_done.emit(self._frames.copy())
+                        self.capture_done.emit(self._frames) # Không dùng copy() ở đây để tránh nhân đôi RAM
+                    
+                    # Giải phóng frame trung gian
+                    del small_frame
+                    import gc
+                    gc.collect()
 
             # Flip ngang để hiển thị như gương — chỉ dùng cho UI
             display = cv2.flip(frame, 1)
@@ -155,8 +164,12 @@ class EnrollWorker(QThread):
                 student_id=self._student_id,
                 photo_count=len(self._frames)
             )
-            enrollment_service._capture.frames = self._frames.copy()
+            enrollment_service._capture.frames = self._frames
             result = enrollment_service.finish_enrollment()
+            # Xóa list frame ngay sau khi xong để giải phóng RAM
+            self._frames = []
+            import gc
+            gc.collect()
             self.done.emit(result)
         except Exception as e:
             logger.error(f"EnrollWorker error: {e}")
@@ -187,7 +200,7 @@ class EnrollPage(QWidget):
         self._mode = "create"   # "create" hoặc "update"
 
         self._setup_ui()
-        self._load_classes()
+        self._reset_form()
 
     # ─── UI ───────────────────────────────────
 
@@ -294,7 +307,7 @@ class EnrollPage(QWidget):
 
         grid.addWidget(create_label("Tòa nhà (Mini PC) *"), 2, 0)
         grid.addWidget(create_label("Tầng *"), 2, 1)
-        self._cmb_building = QComboBox(); self._cmb_building.addItems(["-- Chọn Mini PC --", "KTX E1", "KTX E2", "KTX E3", "KTX E4", "KTX E5", "KTX E6"]); self._cmb_building.setStyleSheet(combo_style()); self._cmb_building.setFixedHeight(42)
+        self._cmb_building = QComboBox(); self._cmb_building.setStyleSheet(combo_style()); self._cmb_building.setFixedHeight(42)
         self._cmb_floor = QComboBox(); self._cmb_floor.addItem("-- Tầng --"); self._cmb_floor.setStyleSheet(combo_style()); self._cmb_floor.setFixedHeight(42)
         grid.addWidget(self._cmb_building, 3, 0)
         grid.addWidget(self._cmb_floor, 3, 1)
@@ -320,8 +333,8 @@ class EnrollPage(QWidget):
         grid.addWidget(self._inp_email, 9, 0)
         grid.addWidget(self._cmb_camera, 9, 1)
 
-        self._cmb_building.currentTextChanged.connect(self._on_building_changed)
-        self._cmb_floor.currentTextChanged.connect(self._on_floor_changed)
+        self._cmb_building.currentIndexChanged.connect(self._on_building_changed)
+        self._cmb_floor.currentIndexChanged.connect(self._on_floor_changed)
 
         layout.addLayout(grid)
         layout.addStretch()
@@ -434,14 +447,17 @@ class EnrollPage(QWidget):
         self._inp_email.setText(student.email or "")
         
         # 1. Set Building & Floor trước (để trigger load_rooms và load_classes)
-        b_idx = self._cmb_building.findText(student.building or "-- Chọn Mini PC (Tòa) --")
+        b_idx = self._cmb_building.findData(student.building)
         if b_idx >= 0: self._cmb_building.setCurrentIndex(b_idx)
         
-        f_idx = self._cmb_floor.findText(student.floor or "-- Tầng --")
+        # Vì floor trong DB đang là VARCHAR (Tầng 1...), cần convert hoặc findText nếu không khớp
+        # Tuy nhiên room_repo lưu Tang là INT. 
+        # Giả sử student.floor lưu giá trị INT (như Room.tang)
+        f_idx = self._cmb_floor.findData(student.floor)
         if f_idx >= 0: self._cmb_floor.setCurrentIndex(f_idx)
 
         # 2. Sau khi Floor đã set -> Room đã được load -> Set Room
-        r_idx = self._cmb_room.findText(student.room or "-- Phòng --")
+        r_idx = self._cmb_room.findData(student.room)
         if r_idx >= 0: self._cmb_room.setCurrentIndex(r_idx)
 
         # 3. Set Gender (Dùng findText cho an toàn)
@@ -485,10 +501,11 @@ class EnrollPage(QWidget):
     def _setup_create_mode_prefilled(self, student):
         self._title_lbl.setText("ĐĂNG KÝ HỌC VIÊN")
         self._subtitle_lbl.setText(f"Thông tin đã điền — [{student.student_code}] chỉ cần mở camera và chụp")
-        self._lock_form()
-        self._btn_create.setEnabled(False)
+        # Không lock form để người dùng có thể sửa nếu cần
+        self._btn_create.setEnabled(True)
+        self._btn_create.setText("➡️  TIẾP TỤC")
         self._btn_camera.setEnabled(True)
-        self._set_create_status(f"✅ Sẵn sàng: [{student.student_code}] {student.full_name} — Vui lòng mở Camera", Colors.GREEN)
+        self._set_create_status(f"✅ Sẵn sàng: [{student.student_code}] {student.full_name} — Nhấn Tiếp tục hoặc Mở Camera", Colors.GREEN)
 
     def _on_update_student(self):
         code = self._inp_code.text().strip()
@@ -504,12 +521,9 @@ class EnrollPage(QWidget):
 
         gender   = self._cmb_gender.currentText()
         gender   = None if gender == "-- Chọn --" else gender
-        building = self._cmb_building.currentText()
-        building = None if building == "-- Chọn Mini PC (Tòa) --" else building
-        floor    = self._cmb_floor.currentText()
-        floor    = None if floor == "-- Tầng --" else floor
-        room     = self._cmb_room.currentText()
-        room     = None if room == "-- Phòng --" else room
+        building = self._cmb_building.currentData()
+        floor    = self._cmb_floor.currentData()
+        room     = self._cmb_room.currentData()
         class_name = self._cmb_class.currentText()
         phone    = self._inp_phone.text().strip() or None
         email    = self._inp_email.text().strip() or None
@@ -588,37 +602,67 @@ class EnrollPage(QWidget):
         self._load_cameras()
 
 
-    def _on_building_changed(self, building: str):
+    def _load_buildings(self):
+        """Load danh sách tòa nhà từ bảng ToaNha."""
+        current_ma_toa = self._cmb_building.currentData()
+        self._cmb_building.blockSignals(True)
+        self._cmb_building.clear()
+        self._cmb_building.addItem("-- Chọn Tòa --", None)
+        try:
+            from database.repositories import building_repo
+            for b in building_repo.get_all():
+                self._cmb_building.addItem(b.ten_toa, b.ma_toa)
+            
+            if current_ma_toa:
+                idx = self._cmb_building.findData(current_ma_toa)
+                if idx >= 0: self._cmb_building.setCurrentIndex(idx)
+        except Exception as e:
+            logger.warning(f"Không load được danh mục tòa nhà: {e}")
+        finally:
+            self._cmb_building.blockSignals(False)
+
+    def _on_building_changed(self):
+        ma_toa = self._cmb_building.currentData()
         self._cmb_floor.blockSignals(True)
         self._cmb_floor.clear()
         self._cmb_floor.addItem("-- Tầng --")
-        if building and building != "-- Chọn Mini PC --":
-            self._cmb_floor.addItems(["Tầng 1", "Tầng 2", "Tầng 3", "Tầng 4", "Tầng 5"])
+        
+        if ma_toa:
+            try:
+                from database.repositories import room_repo
+                floors = room_repo.get_floors_by_building(ma_toa)
+                for f in floors:
+                    self._cmb_floor.addItem(f"Tầng {f}", f)
+            except Exception as e:
+                logger.warning(f"Lỗi load tầng: {e}")
+        
         self._cmb_floor.blockSignals(False)
-        self._on_floor_changed(self._cmb_floor.currentText())
+        self._on_floor_changed()
 
-    def _on_floor_changed(self, floor: str):
-        self._load_rooms(floor)
-        self._load_classes()
+    def _on_floor_changed(self):
+        self._load_rooms()
 
-    def _load_rooms(self, floor: str):
+    def _load_rooms(self):
+        ma_toa = self._cmb_building.currentData()
+        tang = self._cmb_floor.currentData()
+        
         current_room = self._cmb_room.currentText()
         self._cmb_room.blockSignals(True)
         self._cmb_room.clear()
         self._cmb_room.addItem("-- Phòng --")
         
-        if floor != "-- Tầng --":
+        if ma_toa and tang is not None:
             try:
-                floor_num = int(floor.split()[1])
-                for i in range(1, 8):  # 7 phòng mỗi tầng
-                    self._cmb_room.addItem(f"P{floor_num}{i:02d}")
-            except:
-                pass
+                from database.repositories import room_repo
+                rooms = room_repo.get_by_building_and_floor(ma_toa, tang)
+                for r in rooms:
+                    self._cmb_room.addItem(r.ten_phong, r.ma_phong)
+            except Exception as e:
+                logger.warning(f"Lỗi load phòng: {e}")
                 
         if current_room:
             idx = self._cmb_room.findText(current_room)
-            if idx >= 0:
-                self._cmb_room.setCurrentIndex(idx)
+            if idx >= 0: self._cmb_room.setCurrentIndex(idx)
         self._cmb_room.blockSignals(False)
 
     def _load_classes(self):
@@ -685,8 +729,13 @@ class EnrollPage(QWidget):
         self._btn_camera.setEnabled(True)
 
     def _on_create_student(self):
+        logger.info("Button Xác nhận clicked")
         code = self._inp_code.text().strip()
         name = self._inp_name.text().strip()
+        if not code or not name:
+            self._set_create_status("⚠️ Vui lòng nhập Mã và Tên học viên!", Colors.ORANGE)
+            return
+
         class_id = self._cmb_class.currentData()
         if class_id is None:
             self._set_create_status("⚠️ Vui lòng chọn lớp học!", Colors.ORANGE)
@@ -695,12 +744,9 @@ class EnrollPage(QWidget):
         class_name = self._cmb_class.currentText()
         gender   = self._cmb_gender.currentText()
         gender   = None if gender == "-- Chọn --" else gender
-        building = self._cmb_building.currentText()
-        building = None if building == "-- Chọn Mini PC (Tòa) --" else building
-        floor    = self._cmb_floor.currentText()
-        floor    = None if floor == "-- Tầng --" else floor
-        room     = self._cmb_room.currentText()
-        room     = None if room == "-- Phòng --" else room
+        building = self._cmb_building.currentData()
+        floor    = self._cmb_floor.currentData()
+        room     = self._cmb_room.currentData()
         phone    = self._inp_phone.text().strip() or None
         email    = self._inp_email.text().strip() or None
 
@@ -710,9 +756,14 @@ class EnrollPage(QWidget):
                 student_code=code, full_name=name, class_id=class_id, gender=gender, phone=phone, email=email,
                 class_name=class_name, building=building, floor=floor, room=room
             )
+            
+            # Nếu sid là None (học viên đã tồn tại), nhưng chúng ta đã có _current_student_id
+            if sid is None and self._current_student_id:
+                sid = self._current_student_id
+            
             if sid and sid > 0:
                 self._current_student_id = sid
-                self._set_create_status(f"✅ Đã tạo: [{code}] {name} (ID={sid})", Colors.GREEN)
+                self._set_create_status(f"✅ Xác nhận: [{code}] {name}", Colors.GREEN)
                 self._btn_create.setEnabled(False)
                 self._btn_camera.setEnabled(True)
                 self._lock_form()
@@ -791,6 +842,7 @@ class EnrollPage(QWidget):
             frames=self._captured_frames,
             student_id=self._current_student_id
         )
+        self._captured_frames = [] # Giải phóng reference ở UI ngay khi đẩy vào worker
         self._enroll_worker.done.connect(self._on_enroll_done)
         self._enroll_worker.start()
 
@@ -849,6 +901,12 @@ class EnrollPage(QWidget):
 
     def _on_frame(self, frame: np.ndarray):
         self._camera_view.update_frame(frame)
+        # Hạn chế rò rỉ RAM bằng cách dọn rác định kỳ (mỗi 100 frame)
+        if not hasattr(self, "_frame_counter"): self._frame_counter = 0
+        self._frame_counter += 1
+        if self._frame_counter % 100 == 0:
+            import gc
+            gc.collect()
 
     def _on_photo_taken(self, current: int, total: int):
         self._progress_bar.setValue(current)
@@ -905,15 +963,9 @@ class EnrollPage(QWidget):
         
         self._title_lbl.setText("Đăng Ký Học Viên")
         self._subtitle_lbl.setText("Hệ thống nhận diện khuôn mặt — Chụp 10 ảnh mẫu")
-        self._btn_create.setText("✅  XÁC NHẬN")
-        self._btn_create.setStyleSheet(f"""
-            QPushButton {{
-                background: {Colors.CYAN}; color: white; border-radius: 10px;
-                font-size: 14px; font-weight: 800; letter-spacing: 0.5px;
-            }}
-            QPushButton:hover {{ background: {Colors.CYAN_DIM}; }}
-        """)
+        self._btn_create.setText("✅  XÁC NHẬN THÔNG TIN")
         self._btn_create.setEnabled(True)
+        self._btn_create.setStyleSheet(self._btn_create.styleSheet()) # Giữ nguyên style cũ
         try: self._btn_create.clicked.disconnect()
         except Exception: pass
         self._btn_create.clicked.connect(self._on_create_student)
@@ -924,10 +976,10 @@ class EnrollPage(QWidget):
         self._btn_enroll.setEnabled(False)
         self._btn_enroll.setText("🎯  HOÀN TẤT ĐĂNG KÝ")
         self._progress_bar.setValue(0)
-        self._lbl_count.setText("0 / 10")
         self._result_card.hide()
         self._lbl_create_status.setText("")
         self._load_classes()
+        self._load_buildings()
         self._load_cameras()
         self._lbl_guide.setText("💡 Vui lòng nhập thông tin học viên trước")
         for dot in self._dots:

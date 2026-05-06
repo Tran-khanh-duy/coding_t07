@@ -30,58 +30,40 @@ if not exist "logs" mkdir logs
 if not exist "assets\snapshots" mkdir assets\snapshots
 if not exist "reports\output" mkdir reports\output
 
-:menu
-cls
-color 0b
-echo ==============================================================================
-echo                 FACEATTEND SERVER - TRUNG TAM ĐIEU KHIEN
-echo ==============================================================================
-echo.
-echo [THONG TIN CAU HINH HIEN TAI]
-if exist ".env.server" (
-    echo   Cau hinh: .env.server tim thay.
-) else (
-    echo   [CANH BAO] Khong tim thay file .env.server! 
-    echo   Dang dung cau hinh mac dinh hoac ban nen tao file de chay an toan nhat.
+:: 4. Khoi dong he thong ngay lap tuc
+echo [INFO] Dang kiem tra cau hinh...
+if not exist ".env.server" (
+    echo [CANH BAO] Khong tim thay file .env.server! Dang dung mac dinh.
 )
-echo.
-
-:: TU DONG KHOI DONG SERVER BO QUA MENU
-goto run_server
-
-:run_test
-cls
-color 0a
-echo ============================================================
-echo   DANG CHAY TIEU TRINH QUET CAMERA IP...
-echo ============================================================
-%PY_EXE% test_ip_camera.py
-echo.
-pause
-goto menu
-
-:run_server
-cls
-color 0b
-echo ============================================================
-echo   DANG KHOI DONG HE THONG SERVER...
-echo ============================================================
-echo.
-
-echo [1/2] Dang khoi dong API Server (Port: 8000)...
-echo [HINT] Cua so moi se xuat hien de hien loi hoac log ket noi tu Edge Box.
-start "FaceAttend API Server" cmd /k "title [SERVER] API Lua Chon && %PY_EXE% api_server.py"
-
-:: Cho API Server khoi dong (3 giay)
-timeout /t 3 /nobreak >nul
 
 echo.
-echo [2/2] Dang khoi dong Giao dien quan ly chinh (PyQt6)...
+echo [1/3] Dang khoi dong ha tang (Redis, MySQL) qua Docker...
+docker-compose up -d redis db >nul 2>&1
+if %errorlevel% neq 0 (
+    docker compose up -d redis db >nul 2>&1
+    if %errorlevel% neq 0 (
+        echo [CANH BAO] Khong the chay Docker. Vui long chac chan Docker Desktop da duoc bat!
+    ) else (
+        echo [OK] Da chay Redis/DB qua 'docker compose'
+    )
+) else (
+    echo [OK] Da chay Redis/DB qua 'docker-compose'
+)
+
+echo.
+echo [2/3] Dang khoi dong API Server (Port: 8000)...
+start "FaceAttend API Server" cmd /k "title [SERVER] API Server && %PY_EXE% api_server.py"
+
+:: Cho API Server khoi dong (5 giay)
+timeout /t 5 /nobreak >nul
+
+echo.
+echo [3/3] Dang khoi dong Giao dien quan ly chinh (Dashboard)...
 %PY_EXE% main.py
 
 echo.
 echo ============================================================
-echo [DONE] Server da dung hoat dong.
+echo [DONE] Dashboard da dong hoac xay ra loi. Nhan phim bat ky de thoat.
 echo ============================================================
 pause
-goto menu
+exit

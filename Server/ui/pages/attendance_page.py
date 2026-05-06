@@ -19,14 +19,12 @@ import os
 import requests
 from pathlib import Path
 
-# Thêm import cho system_state
-from api_server import system_state
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ui.styles.theme import Colors, card_style, combo_style
 from ui.widgets.camera_preview import CameraPreviewWidget
-from database.repositories import camera_repo, class_repo, record_repo
+from database.repositories import camera_repo, class_repo, record_repo, building_repo
 from config import app_config
 
 # ─────────────────────────────────────────────
@@ -194,7 +192,7 @@ class RemoteStreamWorker(QThread):
                     if resp.status_code == 404:
                         msg = "Server chưa có hình (Chờ Mini PC tải lên)"
                         
-                    print(f"[ERROR] UI Stream {self.camera_id} fail: {msg}")
+                    logger.error(f"[ERROR] UI Stream {self.camera_id} fail: {msg}")
                     self.error_occurred.emit(msg)
                     time.sleep(0.5)
 
@@ -256,7 +254,8 @@ class AttendanceListItem(QWidget):
         name_lbl = QLabel(display_name)
         name_lbl.setStyleSheet(f"font-size: 14px; font-weight: 700; color: {Colors.TEXT}; border: none; background: transparent;")
         
-        detail_lbl = QLabel(f"{event['student_code']}")
+        loc_info = f" — {event.get('building', '')} / {event.get('room', '')}" if event.get("building") else ""
+        detail_lbl = QLabel(f"{event['student_code']}{loc_info}")
         detail_lbl.setStyleSheet(f"font-size: 12px; color: {Colors.TEXT_DIM}; border: none; background: transparent;")
         
         info_col.addWidget(name_lbl)
@@ -550,15 +549,15 @@ class AttendancePage(QWidget):
 
         self._refresh_cameras()
 
-        # ── Chọn lớp (từ bảng lop trong qlsv) ──
-        class_lbl = QLabel("Lớp học")
+        # ── Chọn Tòa nhà (thay cho chọn lớp) ──
+        class_lbl = QLabel("Tòa nhà")
         class_lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; border: none; background: transparent; padding-top: 6px;")
         self._cmb_session_class = QComboBox()
         self._cmb_session_class.setStyleSheet(combo_style())
-        self._cmb_session_class.setPlaceholderText("-- Chọn lớp --")
+        self._cmb_session_class.setPlaceholderText("-- Chọn tòa nhà --")
         sc_layout.addWidget(class_lbl)
         sc_layout.addWidget(self._cmb_session_class)
-        self._load_session_classes()
+        self._load_buildings()
 
         # Buổi học
         subj_lbl = QLabel("Buổi học")
@@ -853,23 +852,26 @@ class AttendancePage(QWidget):
             logger.error(f"Error refreshing cameras: {e}")
 
 
-    def _load_session_classes(self):
-        """Load danh sách lớp từ bảng lop vào ComboBox chọn lớp điểm danh."""
+    def _load_buildings(self):
+        """Load danh sách tòa nhà từ bảng ToaNha vào ComboBox."""
         self._cmb_session_class.clear()
-        self._cmb_session_class.addItem("-- Chọn lớp --", None)
+        self._cmb_session_class.addItem("-- Chọn tòa nhà --", None)
         try:
-            from database.repositories import class_repo
-            for cls in class_repo.get_all():
-                # cls.class_id = IDLop (VARCHAR), cls.class_name = TenLop
-                self._cmb_session_class.addItem(cls.class_name, cls.class_id)
+            buildings = building_repo.get_all()
+            for bld in buildings:
+                self._cmb_session_class.addItem(f"Tòa {bld.ma_toa} ({bld.ten_toa})", bld.ma_toa)
         except Exception as e:
-            logger.warning(f"Không load được danh sách lớp: {e}")
+            logger.warning(f"Không load được danh sách tòa nhà: {e}")
+
+    def _load_session_classes(self):
+        """Giữ lại để tương thích hoặc debug, nhưng không dùng chính nữa."""
+        pass
 
     def _start_session(self):
-        # ── Lấy lớp đã chọn (IDLop từ bảng lop) ──
+        # ── Lấy tòa nhà đã chọn (MaToa) ──
         class_id = self._cmb_session_class.currentData()
         if not class_id:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng chọn lớp học trước khi bắt đầu điểm danh!")
+            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng chọn tòa nhà trước khi bắt đầu điểm danh!")
             return
 
         camera_source = self._selected_camera_source
@@ -985,7 +987,7 @@ class AttendancePage(QWidget):
         self._inp_subject.setEnabled(True)
         self._date_picker.setEnabled(True)
         self._cmb_session_class.setEnabled(True)
-        self._load_session_classes()
+        self._load_buildings()
         self._camera_view.clear()
         
         self._cam_stack.setCurrentIndex(0)
@@ -1066,16 +1068,17 @@ class AttendancePage(QWidget):
                         "class_code": p.get("class_code", ""),
                         "student_code": code,
                         "similarity": p["score"],
+                        "building": p.get("building", ""),
+                        "room": p.get("room", ""),
                         "time_str": p["time"].strftime("%H:%M:%S") if hasattr(p["time"], "strftime") else str(p["time"])
                     }
                     self._on_attendance_done(event)
                     
-            # Lấy sĩ số thực tế theo camera được chọn
-            from database.repositories import student_repo
-            total_students = student_repo.get_student_count_by_camera(self._selected_camera_source)
+            # Lấy sĩ số thực tế của cả phiên (Tổng số học sinh được prefill cho tòa nhà/lớp này)
+            total_students = record_repo.get_total_count(self._session_id)
             self._stat_total.setText(str(total_students))
             
-            # Tính toán số lượng Vắng
+            # Tính toán số lượng Vắng dựa trên tổng sĩ số của phiên
             absent_count = total_students - len(present_list)
             self._stat_absent.setText(str(max(0, absent_count)))
             
@@ -1114,5 +1117,5 @@ class AttendancePage(QWidget):
     def showEvent(self, event):
         if self._worker and self._worker._paused: self._worker.resume()
         self._refresh_cameras()
-        self._load_session_classes()
+        self._load_buildings()
         super().showEvent(event)

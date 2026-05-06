@@ -13,6 +13,10 @@ import time
 import threading
 from dataclasses import dataclass
 from typing import Optional
+import warnings
+
+# Suppress InsightFace FutureWarnings to keep the console clean
+warnings.filterwarnings("ignore", category=FutureWarning)
 
 import cv2
 import numpy as np
@@ -461,28 +465,84 @@ class FaceEngine:
         
         logger.info(f"👉 Bắt đầu vòng lặp duyệt {len(photos)} ảnh...")
         
+        # Kích thước tối đa để detect (320px là kích thước lưới quét tối ưu của model buffalo_s/l)
+        # Việc resize đúng về 320 giúp giảm thiểu việc padding/scaling nội bộ của InsightFace -> Tiết kiệm VRAM nhất.
+        MAX_DETECT_SIZE = 320
+
         for i, photo in enumerate(photos):
-            try:
-                # 1. TRẠM KIỂM TRA HÌNH DÁNG ẢNH (Quan trọng nhất)
-                logger.info(f"📸 Ảnh {i+1}: shape={photo.shape}, dtype={photo.dtype}")
-                
-                faces = self.detect_faces(photo)
-                if not faces:
-                    logger.warning(f"⚠️ AI 'mù' - Không tìm thấy khuôn mặt trong ảnh {i+1}")
-                    continue
+            # Cố gắng xử lý mỗi ảnh tối đa 2 lần nếu gặp lỗi CUDA OOM
+            for attempt in range(2):
+                try:
+                    # 0. Giải phóng bộ nhớ triệt để
+                    import gc
+                    gc.collect()
+                    try:
+                        import torch
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                            torch.cuda.empty_cache()
+                    except: pass
+
+                    # 1. TRẠM KIỂM TRA HÌNH DÁNG ẢNH
+                    logger.info(f"📸 Ảnh {i+1} (Lần {attempt+1}): shape={photo.shape}")
+
+                    # 2. RESIZE XUỐNG ĐỂ TRÁNH CUDA OOM
+                    h, w = photo.shape[:2]
+                    scale = 1.0
+                    if max(h, w) > MAX_DETECT_SIZE:
+                        scale = MAX_DETECT_SIZE / max(h, w)
+                        detect_frame = cv2.resize(
+                            photo,
+                            (int(w * scale), int(h * scale)),
+                            interpolation=cv2.INTER_AREA,
+                        )
+                    else:
+                        detect_frame = photo
+
+                    faces = self.detect_faces(detect_frame)
                     
-                # Lấy khuôn mặt lớn nhất
-                face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
-                
-                if face.embedding is not None:
-                    embeddings.append(face.embedding)
-                    det_scores.append(face.det_score)
-                    logger.info(f"✅ Ảnh {i+1}: Trích xuất embedding thành công!")
-                else:
-                    logger.warning(f"⚠️ Ảnh {i+1}: Thấy mặt nhưng KHÔNG trích xuất được embedding!")
+                    if not faces:
+                        # Nếu không thấy mặt, có thể do resize quá nhỏ hoặc lỗi logic
+                        # Ta không retry ở đây mà chuyển sang ảnh tiếp theo
+                        if attempt == 0:
+                            logger.warning(f"⚠️ AI 'mù' - Không tìm thấy khuôn mặt trong ảnh {i+1}")
+                        break 
+
+                    # Scale bbox + landmarks trở về kích thước ảnh GỐC để crop chính xác
+                    if scale < 1.0:
+                        inv = 1.0 / scale
+                        for f in faces:
+                            f.bbox = (f.bbox * inv).astype(int)
+                            if f.landmarks is not None:
+                                f.landmarks = f.landmarks * inv
+
+                    # Lấy khuôn mặt lớn nhất
+                    face = max(faces, key=lambda f: (f.bbox[2] - f.bbox[0]) * (f.bbox[3] - f.bbox[1]))
                     
-            except Exception as e:
-                logger.error(f"❌ VĂNG LỖI TẠI ẢNH {i+1}: {e}\n{traceback.format_exc()}")
+                    if face.embedding is not None:
+                        embeddings.append(face.embedding.copy())
+                        det_scores.append(face.det_score)
+                        logger.info(f"✅ Ảnh {i+1}: Trích xuất embedding thành công!")
+                    else:
+                        logger.warning(f"⚠️ Ảnh {i+1}: Thấy mặt nhưng KHÔNG trích xuất được embedding!")
+                    
+                    # Thành công thì break khỏi vòng lặp attempt
+                    # Nghỉ 150ms để ổn định GPU
+                    time.sleep(0.15)
+                    
+                    # Giải phóng các đối tượng tạm
+                    del faces, face, detect_frame
+                    break
+                        
+                except Exception as e:
+                    err_msg = str(e)
+                    if "out of memory" in err_msg.lower() and attempt == 0:
+                        logger.error(f"🚨 Lỗi CUDA OOM tại ảnh {i+1}, đang thử lại sau 0.5s...")
+                        time.sleep(0.5)
+                        continue
+                    else:
+                        logger.error(f"❌ VĂNG LỖI TẠI ẢNH {i+1}: {e}")
+                        break # Thoát khỏi retry nếu lỗi khác hoặc đã retry rồi
 
         if not embeddings: 
             logger.error("❌ KẾT LUẬN: Không có embedding nào được lấy ra từ 15 ảnh!")

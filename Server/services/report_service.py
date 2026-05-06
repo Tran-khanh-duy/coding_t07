@@ -8,9 +8,7 @@ from dataclasses import dataclass
 from typing import Optional
 from loguru import logger
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import app_config, report_config
+from core.config import app_config, report_config
 
 
 # ─────────────────────────────────────────────
@@ -98,176 +96,159 @@ def load_report_data(session_id: int) -> Optional[ReportData]:
 # ─────────────────────────────────────────────
 def export_excel(data: ReportData, output_path: str = None) -> Optional[str]:
     try:
+        import pandas as pd
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
 
+        # 1. Chuyển đổi dữ liệu sang Pandas DataFrame
+        records = data.records or []
+        if not records:
+            df = pd.DataFrame(columns=["student_code", "full_name", "class_name", "gender", "status", "check_in_time", "building"])
+        else:
+            df = pd.DataFrame(records)
+
+        # Đảm bảo các cột cần thiết tồn tại
+        for col in ["building", "class_name", "status"]:
+            if col not in df.columns:
+                df[col] = "Khác"
+
+        # Khởi tạo Workbook
         wb = Workbook()
+        
+        # Định dạng chung
+        border_thin = Border(
+            left=Side(style='thin', color="CCCCCC"), right=Side(style='thin', color="CCCCCC"),
+            top=Side(style='thin', color="CCCCCC"), bottom=Side(style='thin', color="CCCCCC")
+        )
+        header_fill = PatternFill(start_color="2A313C", end_color="2A313C", fill_type="solid") # Dark Gray cho header bảng
+        header_font = Font(name="Arial", size=11, bold=True, color="FFFFFF")
+        title_fill = PatternFill(start_color="69E29C", end_color="69E29C", fill_type="solid") # Màu Xanh lá (Mint)
+        title_font = Font(name="Arial", size=14, bold=True, color="FFFFFF")
+        center_align = Alignment(horizontal="center", vertical="center")
+        left_align = Alignment(horizontal="left", vertical="center")
 
-        C_DARK_BG  = "07090F"; C_HEADER   = "0A1628"; C_CYAN    = "06C8E8"
-        C_GREEN    = "10D98A"; C_RED      = "F04060"; C_ORANGE  = "F59E0B"
-        C_TEXT     = "DCE8F8"; C_DIM      = "4A6080"; C_PRESENT = "0D3D24"
-        C_ABSENT   = "3D0D14"; C_TITLE_BG = "050D1E"
+        # ── 1. SHEET TỔNG HỢP (DASHBOARD) ──
+        ws_dash = wb.active
+        ws_dash.title = "Tổng hợp"
+        
+        ws_dash.merge_cells("A1:E1")
+        c = ws_dash["A1"]
+        c.value = "TỔNG HỢP ĐIỂM DANH THEO TÒA NHÀ"
+        c.font = title_font
+        c.fill = title_fill
+        c.alignment = center_align
+        ws_dash.row_dimensions[1].height = 35
 
-        def border_all():
-            s = Side(style="thin", color="1C2E4A")
-            return Border(left=s, right=s, top=s, bottom=s)
+        # Group theo Tòa nhà
+        if not df.empty:
+            df_bld = df.groupby('building').agg(
+                Tổng_SV=('student_code', 'count'),
+                Có_mặt=('status', lambda x: (x == 'PRESENT').sum()),
+                Vắng=('status', lambda x: (x == 'ABSENT').sum())
+            ).reset_index()
+            df_bld['Tỉ_lệ_%'] = (df_bld['Có_mặt'] / df_bld['Tổng_SV'] * 100).round(1)
+        else:
+            df_bld = pd.DataFrame(columns=["building", "Tổng_SV", "Có_mặt", "Vắng", "Tỉ_lệ_%"])
 
-        # ── Group by Class ──
-        records_by_class = {}
-        for r in (data.records or []):
-            c_name = r.get("class_name", "Khác")
-            if c_name not in records_by_class:
-                records_by_class[c_name] = []
-            records_by_class[c_name].append(r)
-            
-        if not records_by_class:
-            records_by_class["Khác"] = []
+        dash_headers = ["Tòa nhà", "Tổng số SV", "Có mặt", "Vắng mặt", "Tỉ lệ (%)"]
+        for col_num, header in enumerate(dash_headers, 1):
+            cell = ws_dash.cell(row=3, column=col_num)
+            cell.value = header
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = center_align
+            cell.border = border_thin
 
-        is_first_sheet = True
-        for c_name, c_records in records_by_class.items():
-            if is_first_sheet:
-                ws1 = wb.active
-                ws1.title = c_name[:31]
-                is_first_sheet = False
-            else:
-                ws1 = wb.create_sheet(c_name[:31])
-            
-            ws1.sheet_view.showGridLines = False
-            ws1.sheet_properties.tabColor = C_CYAN
+        for r_idx, row in enumerate(df_bld.itertuples(index=False), 4):
+            for c_idx, val in enumerate(row, 1):
+                cell = ws_dash.cell(row=r_idx, column=c_idx)
+                cell.value = val
+                cell.alignment = center_align
+                cell.border = border_thin
 
-            col_widths = [5, 12, 30, 10, 14, 14, 14, 12, 12, 14]
-            for i, w in enumerate(col_widths, 1):
-                ws1.column_dimensions[get_column_letter(i)].width = w
+        ws_dash.column_dimensions['A'].width = 25
+        ws_dash.column_dimensions['B'].width = 15
+        ws_dash.column_dimensions['C'].width = 15
+        ws_dash.column_dimensions['D'].width = 15
+        ws_dash.column_dimensions['E'].width = 15
 
-            ws1.merge_cells("B1:K1")
-            c = ws1["B1"]
-            c.value = "HỆ THỐNG ĐIỂM DANH KHUÔN MẶT"
-            c.font = Font(name="Arial", size=18, bold=True, color=C_CYAN)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.fill = PatternFill("solid", fgColor=C_TITLE_BG)
-            ws1.row_dimensions[1].height = 40
-
-            ws1.merge_cells("B2:K2")
-            c = ws1["B2"]
-            c.value = data.title
-            c.font = Font(name="Arial", size=14, bold=True, color=C_TEXT)
-            c.alignment = Alignment(horizontal="center", vertical="center")
-            c.fill = PatternFill("solid", fgColor=C_HEADER)
-            ws1.row_dimensions[2].height = 30
-
-            info_rows = [
-                ("Lớp học:",   f"{c_name}"),
-                ("Môn học:",   data.subject_name),
-                ("Ngày:",      data.session_date),
-                ("Bắt đầu:",   data.start_time),
-                ("Kết thúc:",  data.end_time),
-                ("Giáo viên:", data.teacher_name or "—"),
-            ]
-            for i, (label, value) in enumerate(info_rows, 4):
-                ws1.row_dimensions[i].height = 22
-                ws1.merge_cells(f"B{i}:C{i}")
-                lbl = ws1[f"B{i}"]
-                lbl.value = label
-                lbl.font = Font(name="Arial", size=10, bold=True, color="8BA4C0")
-                lbl.fill = PatternFill("solid", fgColor=C_HEADER)
-                lbl.alignment = Alignment(horizontal="right", vertical="center", indent=1)
-                ws1.merge_cells(f"D{i}:G{i}")
-                val = ws1[f"D{i}"]
-                val.value = value
-                val.font = Font(name="Arial", size=11, bold=True, color=C_TEXT)
-                val.fill = PatternFill("solid", fgColor=C_HEADER)
-                val.alignment = Alignment(horizontal="left", vertical="center", indent=1)
-
-            stat_row = 11
-            c_total = len(c_records)
-            c_present = len([r for r in c_records if r.get("status") == "PRESENT"])
-            c_absent = len([r for r in c_records if r.get("status") == "ABSENT"])
-            c_rate = (c_present / c_total * 100) if c_total > 0 else 0.0
-
-            stats = [
-                ("TỔNG HV",  c_total,              C_CYAN),
-                ("CÓ MẶT",   c_present,               C_GREEN),
-                ("VẮNG MẶT", c_absent,                C_RED),
-                ("TỈ LỆ",    f"{c_rate:.1f}%",   C_ORANGE),
-            ]
-            for (label, value, color), col in zip(stats, ["B","D","F","H"]):
-                ec = chr(ord(col)+1)
-                if col == "H":
-                    ws1.merge_cells(f"H{stat_row}:K{stat_row}")
-                    ws1.merge_cells(f"H{stat_row+1}:K{stat_row+1}")
-                else:
-                    ws1.merge_cells(f"{col}{stat_row}:{ec}{stat_row}")
-                    ws1.merge_cells(f"{col}{stat_row+1}:{ec}{stat_row+1}")
+        # ── 2. CÁC SHEET LỚP (Tạo sheet theo từng nhóm class_name) ──
+        if df.empty:
+            ws_empty = wb.create_sheet("Trống")
+            ws_empty["A1"] = "Không có dữ liệu điểm danh"
+        else:
+            grouped = df.groupby("class_name")
+            for c_name, group in grouped:
+                # Tên sheet tối đa 31 ký tự, không chứa ký tự đặc biệt
+                sheet_name = str(c_name)[:31].replace(":", "").replace("/", "").replace("\\", "").replace("?", "").replace("*", "").replace("[", "").replace("]", "")
+                ws = wb.create_sheet(sheet_name)
+                ws.sheet_view.showGridLines = False
                 
-                lbl = ws1[f"{col}{stat_row}"]
-                lbl.value = label
-                lbl.font = Font(name="Arial", size=9, bold=True, color=color)
-                lbl.alignment = Alignment(horizontal="center", vertical="center")
-                lbl.fill = PatternFill("solid", fgColor=C_HEADER)
-                ws1.row_dimensions[stat_row].height = 22
-                val = ws1[f"{col}{stat_row+1}"]
-                val.value = value
-                val.font = Font(name="Arial", size=20, bold=True, color=color)
-                val.alignment = Alignment(horizontal="center", vertical="center")
-                val.fill = PatternFill("solid", fgColor=f"{color}18")
-                ws1.row_dimensions[stat_row+1].height = 38
+                # Header Tiêu đề lớn
+                ws.merge_cells("A1:F1")
+                c = ws["A1"]
+                c.value = f" BÁO CÁO ĐIỂM DANH LỚP: {c_name} - NGÀY {data.session_date}"
+                c.font = title_font
+                c.fill = title_fill
+                c.alignment = left_align
+                ws.row_dimensions[1].height = 35
+                
+                # Headers Bảng dữ liệu
+                headers = ["STT", "Họ và tên", "MSSV", "Giới tính", "Thời gian", "Ghi chú"]
+                for col_num, header in enumerate(headers, 1):
+                    cell = ws.cell(row=3, column=col_num)
+                    cell.value = header
+                    cell.font = header_font
+                    cell.fill = header_fill
+                    cell.alignment = center_align
+                    cell.border = border_thin
 
-            tbl_start = stat_row + 3
-            headers = ["STT","Mã HV","Họ và Tên","Giới tính",
-                       "Trạng thái","Giờ điểm danh","Độ chính xác", "Tòa nhà", "Phòng", "Camera"]
-            for j, h in enumerate(headers, 2):
-                c = ws1.cell(row=tbl_start, column=j)
-                c.value = h
-                c.font = Font(name="Arial", size=10, bold=True, color=C_TEXT)
-                c.alignment = Alignment(horizontal="center", vertical="center")
-                c.fill = PatternFill("solid", fgColor=C_HEADER)
-                c.border = border_all()
-            ws1.row_dimensions[tbl_start].height = 28
+                ws.column_dimensions['A'].width = 8
+                ws.column_dimensions['B'].width = 30
+                ws.column_dimensions['C'].width = 15
+                ws.column_dimensions['D'].width = 12
+                ws.column_dimensions['E'].width = 15
+                ws.column_dimensions['F'].width = 15
 
-            for idx, record in enumerate(c_records, 1):
-                row = tbl_start + idx
-                ws1.row_dimensions[row].height = 22
-                is_p = record.get("status") == "PRESENT"
-                bg   = C_PRESENT if is_p else C_ABSENT
-                txt  = C_GREEN   if is_p else C_RED
-                vals = [
-                    idx,
-                    record.get("student_code", ""),
-                    record.get("full_name", ""),
-                    record.get("gender", ""),
-                    "✓ Có mặt" if is_p else "✗ Vắng",
-                    record.get("check_in_time", ""),
-                    f"{record.get('recognition_score',0)*100:.1f}%" if is_p else "—",
-                    record.get("building", ""),
-                    record.get("room", ""),
-                    f"Cam {record.get('camera_id','')}" if is_p else "—",
-                ]
-                for j, v in enumerate(vals, 2):
-                    c = ws1.cell(row=row, column=j)
-                    c.value = v
-                    c.font = Font(name="Arial", size=10,
-                                  bold=(j==4),
-                                  color=txt if j==6 else C_TEXT)
-                    c.alignment = Alignment(
-                        horizontal="left" if j==4 else "center",
-                        vertical="center", indent=1 if j==4 else 0)
-                    c.fill = PatternFill("solid", fgColor=bg)
-                    c.border = border_all()
+                # Render Data Rows
+                for idx, row in enumerate(group.itertuples(), 1):
+                    is_p = row.status == "PRESENT"
+                    ghi_chu = "Có mặt" if is_p else "Vắng"
+                    time_str = str(row.check_in_time) if is_p else ""
+                    
+                    vals = [
+                        idx,
+                        row.full_name,
+                        row.student_code,
+                        row.gender,
+                        time_str,
+                        ghi_chu
+                    ]
+                    
+                    row_num = 3 + idx
+                    ws.row_dimensions[row_num].height = 25
+                    for col_num, val in enumerate(vals, 1):
+                        cell = ws.cell(row=row_num, column=col_num)
+                        cell.value = val
+                        cell.border = border_thin
+                        
+                        if col_num in [1, 3, 4, 5]: # STT, MSSV, Giới tính, Thời gian
+                            cell.alignment = center_align
+                        else: # Họ tên, Ghi chú
+                            cell.alignment = left_align
+                            if col_num == 2:
+                                cell.alignment = Alignment(horizontal="left", vertical="center", indent=1)
+                            
+                        # Ghi chú (Màu sắc)
+                        if col_num == 6:
+                            # Chỉnh màu chữ cho "Ghi chú" (Có mặt = Xanh, Vắng = Xám nhạt/Đỏ)
+                            cell.font = Font(color="2E7D32" if is_p else "9E9E9E", bold=True)
+                            cell.alignment = center_align
 
-            footer_row = tbl_start + len(c_records) + 2
-            ws1.merge_cells(f"B{footer_row}:K{footer_row}")
-            f = ws1[f"B{footer_row}"]
-            f.value = (
-                f"Báo cáo tạo lúc: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} "
-                f"| Session ID: {data.session_id}"
-            )
-            f.font = Font(name="Arial", size=9, italic=True, color=C_DIM)
-            f.alignment = Alignment(horizontal="center")
-
+        # Đường dẫn lưu file
         if not output_path:
             fname = (
-                f"BaoCao_{data.class_code}_{data.subject_name[:20]}_"
+                f"BaoCao_DiemDanh_{data.class_code}_"
                 f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
             ).replace("/","-").replace("\\","-").replace(" ","_")
             output_path = str(report_config.output_dir / fname)
@@ -277,6 +258,9 @@ def export_excel(data: ReportData, output_path: str = None) -> Optional[str]:
         logger.success(f"Excel saved: {output_path}")
         return output_path
 
+    except ImportError:
+        logger.error("Thư viện 'pandas' hoặc 'openpyxl' chưa được cài đặt. Hãy chạy: pip install pandas openpyxl")
+        return None
     except Exception as e:
         logger.error(f"export_excel error: {e}")
         return None

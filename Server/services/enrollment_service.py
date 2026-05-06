@@ -207,7 +207,7 @@ class EnrollmentService:
                     photos_taken=0, photos_valid=0,
                     avg_det_score=0, error_msg="Chưa bắt đầu chụp ảnh"
                 )
-            frames     = self._capture.frames.copy()
+            frames     = self._capture.frames
             student_id = self._student_id
 
         student = student_repo.get_by_id(student_id)
@@ -267,6 +267,8 @@ class EnrollmentService:
                 with self._lock:
                     self._capture    = None
                     self._student_id = None
+                    import gc
+                    gc.collect()
 
                 result = EnrollmentResult(
                     success=True,

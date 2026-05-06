@@ -10,7 +10,7 @@ from loguru import logger
 from .connection import get_db
 from .models import (
     Class, Student, FaceEmbedding, AttendanceSession,
-    AttendanceRecord, Camera, EmbeddingCache,
+    AttendanceRecord, Camera, EmbeddingCache, Building, Room
 )
 
 
@@ -402,8 +402,17 @@ class SessionRepository:
         return self.create_session(class_id, subject_name, session_date)
 
     def create_session(self, class_id, subject_name: str, session_date=None) -> int:
-        if session_date is None:
-            session_date = date.today()
+        # --- NÂNG CẤP: Hỗ trợ điểm danh theo Tòa nhà ---
+        # Đảm bảo class_id (có thể là MaToa) tồn tại trong bảng lop để không lỗi Foreign Key
+        db = get_db()
+        exists = db.execute("SELECT 1 FROM lop WHERE IDLop = ?", (class_id,))
+        if not exists:
+            # Thử tìm tên tòa nhà nếu class_id là MaToa
+            bld_row = db.execute("SELECT TenToa FROM ToaNha WHERE MaToa = ?", (class_id,))
+            ten_hien_thi = bld_row[0][0] if bld_row else f"Nhóm {class_id}"
+            db.execute("INSERT INTO lop (IDLop, TenLop) VALUES (?, ?)", (class_id, ten_hien_thi), commit=True)
+            logger.info(f"Đã tự động tạo 'Lớp ảo' cho Tòa nhà/Nhóm: {class_id}")
+
         session_code = (
             f"{class_id}-{session_date.strftime('%Y%m%d')}"
             f"-{datetime.now().strftime('%H%M%S')}"
@@ -422,13 +431,15 @@ class SessionRepository:
         return session_id
 
     def _prefill_absent(self, session_id: int, class_id):
-        # Chèn tất cả học viên thuộc lớp vào bảng điểm danh với trạng thái ABSENT
+        # Chèn tất cả học viên thuộc lớp HOẶC tòa nhà này vào bảng điểm danh với trạng thái ABSENT
+        # Điều này cho phép điểm danh theo Tòa nhà mà không cần đổi IDLop của học viên
         get_db().execute(
             """
             INSERT INTO AttendanceRecords (session_id, student_id, status)
-            SELECT ?, hv.id, 'ABSENT' FROM hocvien hv WHERE hv.IDLop = ?
+            SELECT ?, hv.id, 'ABSENT' FROM hocvien hv 
+            WHERE hv.IDLop = ? OR hv.building = ?
             """,
-            (session_id, class_id), commit=True,
+            (session_id, class_id, class_id), commit=True,
         )
 
     def start_session(self, session_id: int) -> bool:
@@ -588,7 +599,8 @@ class AttendanceRecordRepository:
     def get_present_list(self, session_id: int) -> list:
         rows = get_db().execute(
             """
-            SELECT hv.MaHV, hv.HoTen, ar.check_in_time, ar.recognition_score, l.IDLop
+            SELECT hv.MaHV, hv.HoTen, ar.check_in_time, ar.recognition_score, l.IDLop,
+                   hv.building, hv.room
             FROM AttendanceRecords ar
             INNER JOIN hocvien hv ON hv.id   = ar.student_id
             LEFT  JOIN lop     l  ON l.IDLop = hv.IDLop
@@ -598,10 +610,56 @@ class AttendanceRecordRepository:
             (session_id,),
         )
         return [
-            {"code": r[0], "name": r[1], "time": r[2], "score": float(r[3] or 0), "class_code": r[4]}
+            {
+                "code": r[0], "name": r[1], "time": r[2], "score": float(r[3] or 0), 
+                "class_code": r[4], "building": r[5], "room": r[6]
+            }
             for r in rows
         ]
 
+    def get_total_count(self, session_id: int) -> int:
+        """Lấy tổng số học viên dự kiến trong phiên này (tổng số records)."""
+        rows = get_db().execute(
+            "SELECT COUNT(*) FROM AttendanceRecords WHERE session_id = ?", (session_id,)
+        )
+        return rows[0][0] if rows else 0
+
+# ══════════════════════════════════════════════
+#  BUILDING REPOSITORY (ToaNha)
+# ══════════════════════════════════════════════
+class BuildingRepository:
+    def get_all(self) -> list:
+        rows = get_db().execute("SELECT MaToa, TenToa FROM ToaNha ORDER BY MaToa")
+        return [Building(*r) for r in rows]
+
+# ══════════════════════════════════════════════
+#  ROOM REPOSITORY (Phong)
+# ══════════════════════════════════════════════
+class RoomRepository:
+    def get_all(self) -> list:
+        rows = get_db().execute("SELECT MaPhong, Tang, MaToa, TenPhong FROM Phong ORDER BY MaPhong")
+        return [Room(*r) for r in rows]
+
+    def get_by_building(self, ma_toa: str) -> list:
+        rows = get_db().execute(
+            "SELECT MaPhong, Tang, MaToa, TenPhong FROM Phong WHERE MaToa = ? ORDER BY MaPhong",
+            (ma_toa,)
+        )
+        return [Room(*r) for r in rows]
+
+    def get_by_building_and_floor(self, ma_toa: str, tang: int) -> list:
+        rows = get_db().execute(
+            "SELECT MaPhong, Tang, MaToa, TenPhong FROM Phong WHERE MaToa = ? AND Tang = ? ORDER BY MaPhong",
+            (ma_toa, tang)
+        )
+        return [Room(*r) for r in rows]
+
+    def get_floors_by_building(self, ma_toa: str) -> list:
+        rows = get_db().execute(
+            "SELECT DISTINCT Tang FROM Phong WHERE MaToa = ? ORDER BY Tang",
+            (ma_toa,)
+        )
+        return [r[0] for r in rows]
 
 # ─────────────────────────────────────────────
 #  Singleton instances
@@ -612,3 +670,5 @@ embedding_repo = FaceEmbeddingRepository()
 camera_repo    = CameraRepository()
 session_repo   = SessionRepository()
 record_repo    = AttendanceRecordRepository()
+building_repo  = BuildingRepository()
+room_repo      = RoomRepository()

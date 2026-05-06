@@ -151,8 +151,8 @@ class EdgeConfig:
     embedding_refresh_min: int = int(os.getenv("EDGE_EMBED_REFRESH", "10")) 
 
     # Cooldown & Hiệu suất
-    attendance_cooldown:  int  = int(os.getenv("EDGE_COOLDOWN", "60"))
-    process_every_n:      int  = int(os.getenv("EDGE_PROCESS_N", "3"))
+    attendance_cooldown:  int  = int(os.getenv("EDGE_COOLDOWN", "30"))
+    frame_skip:           int  = int(os.getenv("EDGE_FRAME_SKIP", "3"))
 
     # Hiển thị và Vận hành
     fullscreen:           bool = os.getenv("EDGE_FULLSCREEN", "true").lower() == "true"

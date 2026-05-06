@@ -1,24 +1,20 @@
-"""
-config.py — Cấu hình trung tâm (Đã tối ưu hóa cho Server CPU i5-12400)
-"""
 import os
-import cv2
 from pathlib import Path
 from dataclasses import dataclass, field
 from dotenv import load_dotenv
 
+# Load biến môi trường từ file .env
 load_dotenv()
 
 # =====================================================================
 # TỐI ƯU HÓA HỆ THỐNG MẠNG & OPENCV (ZERO-LATENCY CHO RTSP)
-# Loại bỏ buffer mặc định của FFMPEG, ép dùng TCP để tránh rớt gói tin
 # =====================================================================
 os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|fflags;nobuffer|analyzeduration;1000000|probesize;1000000"
 
 # ─────────────────────────────────────────────
 #  ĐƯỜNG DẪN CƠ BẢN
 # ─────────────────────────────────────────────
-BASE_DIR      = Path(__file__).parent
+BASE_DIR      = Path(__file__).parent.parent
 MODELS_DIR    = BASE_DIR / "models"
 ASSETS_DIR    = BASE_DIR / "assets"
 SNAPSHOTS_DIR = ASSETS_DIR / "snapshots"
@@ -29,7 +25,19 @@ for _dir in [MODELS_DIR, SNAPSHOTS_DIR, LOGS_DIR, REPORTS_DIR]:
     _dir.mkdir(parents=True, exist_ok=True)
 
 # ─────────────────────────────────────────────
-#  DATABASE — SQL SERVER / MYSQL
+#  SERVER CONFIG
+# ─────────────────────────────────────────────
+@dataclass
+class ServerConfig:
+    host: str = os.getenv("SERVER_HOST", "0.0.0.0")
+    port: int = int(os.getenv("SERVER_PORT", "9696"))
+    allowed_ips: list = field(default_factory=lambda: os.getenv("ALLOWED_IPS", "127.0.0.1").split(","))
+    device_token: str = os.getenv("DEVICE_TOKEN", "faceattend_secret_2026")
+    workers: int = int(os.getenv("SERVER_WORKERS", "1"))
+    reload: bool = os.getenv("SERVER_RELOAD", "false").lower() == "true"
+
+# ─────────────────────────────────────────────
+#  DATABASE — MYSQL
 # ─────────────────────────────────────────────
 @dataclass
 class DatabaseConfig:
@@ -37,7 +45,7 @@ class DatabaseConfig:
     port:     int = int(os.getenv("DB_PORT", "3306"))
     database: str = os.getenv("DB_NAME", "qlsv")
     username: str = os.getenv("DB_USER", "root")
-    password: str = os.getenv("DB_PASS", "Quockhai@24092003")
+    password: str = os.getenv("DB_PASS", "")
 
     @property
     def connection_args(self) -> dict:
@@ -51,61 +59,60 @@ class DatabaseConfig:
         }
 
 # ─────────────────────────────────────────────
-#  AI / NHẬN DẠNG KHUÔN MẶT (TỐI ƯU CHO i5-12400)
+#  REDIS CONFIG
+# ─────────────────────────────────────────────
+@dataclass
+class RedisConfig:
+    host: str = os.getenv("REDIS_HOST", "localhost")
+    port: int = int(os.getenv("REDIS_PORT", "6379"))
+    db: int = int(os.getenv("REDIS_DB", "0"))
+    password: str = os.getenv("REDIS_PASSWORD", "")
+
+    @property
+    def url(self) -> str:
+        if self.password:
+            return f"redis://:{self.password}@{self.host}:{self.port}/{self.db}"
+        return f"redis://{self.host}:{self.port}/{self.db}"
+
+# ─────────────────────────────────────────────
+#  AI / NHẬN DẠNG KHUÔN MẶT
 # ─────────────────────────────────────────────
 @dataclass
 class AIConfig:
-    model_name:       str   = "buffalo_s"  # Model nhỏ gọn, cực nhanh cho CPU
+    model_name:       str   = "buffalo_s"
     model_pack_dir:   Path  = MODELS_DIR
-
-    # Sử dụng CPU (-1) thay vì GPU
-    gpu_ctx_id:       int   = -1   
-
-    # Ưu tiên OpenVINO để tăng tốc x2-x3 trên chip Intel, fallback về CPU thường
+    gpu_ctx_id:       int   = -1
     onnx_providers: list = field(
         default_factory=lambda: [
             "OpenVINOExecutionProvider",
             "CPUExecutionProvider"
         ]
     )
-
-    # Giới hạn luồng (Threads) để không gây nghẽn CPU các tác vụ khác (i5-12400 có 6 nhân)
     provider_options: list = field(
         default_factory=lambda: [
-            {}, # Trống cho OpenVINO (để thư viện tự quản lý)
-            {"intra_op_num_threads": 4, "inter_op_num_threads": 1} # Dành 4 luồng cho CPUExecutionProvider
+            {}, 
+            {"intra_op_num_threads": 4, "inter_op_num_threads": 1}
         ]
     )
-
-    # Kích thước lưới quét: 480x480 là cân bằng hoàn hảo giữa tốc độ và chất lượng cho Đăng ký
     det_size:         tuple = (480, 480) 
-
     recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.65")) 
-    
-    # Lấy 5 đến 10 ảnh chất lượng cao để tính Embedding trung bình
     min_enroll_photos:  int = 5
     max_enroll_photos:  int = 10
     embedding_size:   int   = 512
     attendance_cooldown_sec: int = int(os.getenv("ATTENDANCE_COOLDOWN", "60"))
-    
-    # Yêu cầu mặt rõ nét khi đăng ký (0.75 trở lên)
     min_face_det_score: float = float(os.getenv("MIN_FACE_SCORE", "0.75"))
 
-
 # ─────────────────────────────────────────────
-#  CAMERA (CẤU HÌNH SERVER GỌI TRỰC TIẾP RTSP)
+#  CAMERA CONFIG
 # ─────────────────────────────────────────────
 @dataclass
 class CameraConfig:
-    # URL Camera dùng để đăng ký khuôn mặt
-    source: str = os.getenv("REGISTRATION_CAM_RTSP", "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0")
+    source: str = os.getenv("REGISTRATION_CAM_RTSP", "0")
     fps: int = 30
     width:  int = 1280
     height: int = 720
     reconnect_delay_sec: int = 2
     max_reconnect_tries: int = 10
-
-    # Bỏ qua frame rác: Xử lý 1 frame, bỏ qua 2 frame tiếp theo (tiết kiệm CPU)
     process_every_n_frames: int = 3
 
     @property
@@ -113,14 +120,15 @@ class CameraConfig:
         return str(self.source).startswith("rtsp://") or \
                str(self.source).startswith("http://")
 
-# Danh sách Camera (dùng cho điểm danh - nếu Server kiêm luôn điểm danh)
-CAMERAS: list[dict] = [
-    {"id": 1, "name": "Camera 1", "source": "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 2, "name": "Camera 2", "source": "rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 3, "name": "Camera 3", "source": "rtsp://admin:a1234567@192.168.1.19:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 4, "name": "Camera 4", "source": "rtsp://admin:a1234567@192.168.1.20:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 5, "name": "Camera 5", "source": "rtsp://admin:a1234567@192.168.1.21:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-]
+# ─────────────────────────────────────────────
+#  ANTI-SPOOFING
+# ─────────────────────────────────────────────
+@dataclass
+class AntiSpoofConfig:
+    enabled:   bool = False 
+    model_dir: Path = BASE_DIR / "Silent-Face-Anti-Spoofing-master" / "resources" / "anti_spoof_models"
+    device_id: int = -1
+    threshold: float = 0.80 
 
 # ─────────────────────────────────────────────
 #  BÁO CÁO & ỨNG DỤNG
@@ -145,29 +153,10 @@ class AppConfig:
     snapshot_dir:   Path = SNAPSHOTS_DIR
     window_width:  int = 1280
     window_height: int = 800
-    
     camera_groups: list = field(default_factory=lambda: ["KTX E1", "KTX E2", "KTX E3", "KTX E4", "KTX E5", "KTX E6"])
 
 # ─────────────────────────────────────────────
-#  ANTI-SPOOFING (TẮT HOÀN TOÀN NHƯ YÊU CẦU)
-# ─────────────────────────────────────────────
-@dataclass
-class AntiSpoofConfig:
-    enabled:   bool = False 
-    model_dir: Path = BASE_DIR / "Silent-Face-Anti-Spoofing-master" / "resources" / "anti_spoof_models"
-    device_id: int = -1  # CPU
-    threshold: float = 0.80 
-
-# ─────────────────────────────────────────────
-#  WAKE-ON-LAN CONFIG (GIỮ NGUYÊN HOẶC XÓA NẾU KHÔNG CÒN MINIPC)
-# ─────────────────────────────────────────────
-WOL_MINI_PCS = [
-    {"name": "Mini PC KTX E4", "mac_address": "54-BF-64-9C-79-AC", "location": "KTX E4 - Tầng 4", "device_name": "Edge Box 01"},
-    {"name": "Mini PC KTX E5", "mac_address": "AA:BB:CC:DD:EE:02", "location": "KTX E5 - Tầng 5", "device_name": "Edge Box 02"},
-]
-
-# ─────────────────────────────────────────────
-#  FLOOR-CLASS MAPPING
+#  MAPPING
 # ─────────────────────────────────────────────
 FLOOR_CLASS_MAPPING: dict = {
     "KTX E4": {
@@ -199,9 +188,11 @@ FLOOR_CLASS_MAPPING: dict = {
     },
 }
 
-# ─────────────────────────────────────────────
-#  EDGE CONFIG (CÓ THỂ BỎ QUA NẾU ĐÃ BỎ HẲN MINI PC)
-# ─────────────────────────────────────────────
+WOL_MINI_PCS = [
+    {"name": "Mini PC KTX E4", "mac_address": "54-BF-64-9C-79-AC", "location": "KTX E4 - Tầng 4", "device_name": "Edge Box 01"},
+    {"name": "Mini PC KTX E5", "mac_address": "AA:BB:CC:DD:EE:02", "location": "KTX E5 - Tầng 5", "device_name": "Edge Box 02"},
+]
+
 @dataclass
 class EdgeConfig:
     server_url:           str  = os.getenv("EDGE_SERVER_URL", "http://127.0.0.1:9696")
@@ -217,12 +208,9 @@ class EdgeConfig:
     show_fps:             bool = os.getenv("EDGE_SHOW_FPS", "true").lower() == "true"
     auto_start:           bool = os.getenv("EDGE_AUTO_START", "true").lower() == "true"
 
-    camera_list: list = field(default_factory=lambda: [
-        {"id": "CAM_01", "name": "Camera 1", "source": "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0"},
-        {"id": "CAM_02", "name": "Camera 2", "source": "rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0"},
-    ])
-
+server_config     = ServerConfig()
 db_config         = DatabaseConfig()
+redis_config      = RedisConfig()
 ai_config         = AIConfig()
 anti_spoof_config = AntiSpoofConfig()
 camera_config     = CameraConfig()

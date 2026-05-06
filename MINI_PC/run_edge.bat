@@ -1,7 +1,7 @@
 @echo off
 setlocal
 title FaceAttend EDGE BOX
-color 0b
+color 0a
 
 echo ============================================================
 echo           FACEATTEND EDGE BOX - DIEM DANH KHUON MAT
@@ -20,12 +20,8 @@ if %errorlevel% neq 0 (
 set PY_EXE=python
 if exist .venv\Scripts\python.exe (
     set PY_EXE=.venv\Scripts\python.exe
-    rem echo [INFO] Su dung moi truong ao: .venv
 ) else if exist venv\Scripts\python.exe (
     set PY_EXE=venv\Scripts\python.exe
-    rem echo [INFO] Su dung moi truong ao: venv
-) else (
-    rem echo [INFO] Su dung Python he thong.
 )
 
 :: 3. Tao cac thu muc can thiet
@@ -33,46 +29,22 @@ if not exist "models" mkdir models
 if not exist "logs" mkdir logs
 if not exist "database" mkdir database
 
-:menu
-cls
-color 0b
-echo ==============================================================================
-echo                 FACEATTEND EDGE BOX - TRUNG TAM ĐIEU KHIEN
-echo ==============================================================================
-echo.
-echo [THONG TIN CAU HINH HIEN TAI]
-if exist ".env.edge" (
-    type .env.edge | findstr "EDGE_SERVER_URL EDGE_CAMERA_ID EDGE_CAMERA_SOURCE"
-) else (
-    echo   [CANH BAO] Khong tim thay file .env.edge!
+:: 4. Khoi dong he thong ngay lap tuc
+echo [INFO] Dang kiem tra cau hinh...
+if not exist ".env.edge" (
+    echo [CANH BAO] Khong tim thay file .env.edge!
 )
+
 echo.
-
-:: TU DONG MO HE THONG NGAY LAP TUC QUA YEU CAU CUA USER
-goto run_edge
-
-:run_test
-cls
-color 0a
-echo ============================================================
-echo   DANG CHAY TIEU TRINH QUET CAMERA IP...
-echo ============================================================
-%PY_EXE% test_ip_camera.py
-echo.
-pause
-goto menu
-
-:run_edge
-cls
-color 0a
 echo ============================================================
 echo   DANG KHOI DONG EDGE BOX (Nhan Ctrl+C de dung)...
 echo ============================================================
 echo.
 %PY_EXE% main_edge.py
+
 echo.
 echo ============================================================
 echo [DONE] Edge Box da dung.
 echo ============================================================
 pause
-goto menu
+exit

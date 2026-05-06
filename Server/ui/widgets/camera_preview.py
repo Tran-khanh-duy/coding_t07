@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from ui.styles.theme import Colors
+from loguru import logger
 
 class CameraPreviewWidget(QWidget):
     """
@@ -62,7 +63,7 @@ class CameraPreviewWidget(QWidget):
             self._pixmap = QPixmap.fromImage(qt_image)
             self.update()
         except Exception as e:
-            print(f"Lỗi hiển thị frame: {e}")
+            logger.error(f"Lỗi hiển thị frame: {e}")
 
     def update_frame_with_detections(self, frame: np.ndarray, detections: list = None):
         """Cập nhật cả frame và danh sách khuôn mặt cùng lúc."""

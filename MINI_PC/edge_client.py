@@ -35,7 +35,9 @@ os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 
 from config import edge_config, ai_config, anti_spoof_config
 from database.models import EmbeddingCache
-from utils.camera_utils import detect_available_cameras, discover_network_cameras, generate_rtsp_links
+from utils.camera_utils import detect_available_cameras
+from utils.camera_discovery import discover_network_cameras, generate_rtsp_links
+from local_cache.embedding_sync import embedding_sync
 
 
 class EdgeClient:
@@ -134,7 +136,7 @@ class EdgeClient:
     # ─── Server Communication ─────────────────
 
     def _headers(self) -> dict:
-        return {"X-API-Key": self.api_key, "Content-Type": "application/json"}
+        return {"X-DEVICE-TOKEN": self.api_key, "Content-Type": "application/json"}
 
     def check_server(self) -> bool:
         """Kiểm tra server còn online không."""
@@ -229,8 +231,38 @@ class EdgeClient:
         Nếu truyền target_camera_id, sẽ lưu vào cache riêng của camera đó.
         """
         cam_id = target_camera_id or self.camera_id
+        
+        # 1. Thử load từ đĩa (Offline-first) nếu trong RAM chưa có
+        with self._cache_lock:
+            has_ram_cache = cam_id in self._multi_caches if target_camera_id else self._cache is not None
+            
+        if not has_ram_cache:
+            offline_cache, offline_ver = embedding_sync.load_cache(cam_id)
+            if offline_cache:
+                with self._cache_lock:
+                    if target_camera_id:
+                        self._multi_caches[target_camera_id] = offline_cache
+                        self._multi_cache_times[target_camera_id] = time.time()
+                    else:
+                        self._cache = offline_cache
+                        self._last_embed_pull = time.time()
+                self._known_embedding_version = offline_ver
+                logger.info(f"⚡ Đã load Offline Cache cho {cam_id} (Version: {offline_ver})")
+
         try:
-            logger.info(f"📥 Đang tải embeddings từ Server cho camera_id={cam_id}...")
+            logger.info(f"📥 Đang đồng bộ embeddings từ Server cho camera_id={cam_id}...")
+            
+            # Lấy version trước
+            ver_resp = self._session.get(f"{self.server_url}/api/embeddings/version", headers=self._headers(), timeout=5)
+            server_ver = 0
+            if ver_resp.status_code == 200:
+                server_ver = ver_resp.json().get("embedding_version", 0)
+                
+            # Nếu version trên Server = bản Local -> Không cần tải lại
+            if server_ver > 0 and server_ver == self._known_embedding_version and has_ram_cache:
+                logger.info(f"✅ Embeddings cho {cam_id} đã ở phiên bản mới nhất ({server_ver}). Bỏ qua tải.")
+                return True
+
             resp = self._session.get(
                 f"{self.server_url}/api/embeddings",
                 params={"camera_id": cam_id},
@@ -284,6 +316,10 @@ class EdgeClient:
                     self._cache = new_cache
                     self._last_embed_pull = time.time()
 
+            # 2. Lưu xuống đĩa (.pkl) để dùng offline cho lần khởi động sau
+            self._known_embedding_version = server_ver if server_ver > 0 else (self._known_embedding_version + 1)
+            embedding_sync.save_cache(cam_id, new_cache, self._known_embedding_version)
+
             self._server_online = True
             logger.success(f"✅ Đã tải {new_cache.size} khuôn mặt (Camera {cam_id}) từ Server vào RAM")
             return True
@@ -316,7 +352,7 @@ class EdgeClient:
 
     # ─── Push Attendance ──────────────────────
 
-    def send_attendance(
+    def send_attendance_raw(
         self,
         embedding: np.ndarray,
         camera_id: str = None,
@@ -324,8 +360,8 @@ class EdgeClient:
         liveness_checked: bool = False,
     ) -> dict:
         """
-        Gửi kết quả nhận diện về Server.
-        Nếu mất mạng → lưu offline.
+        Gửi thẳng HTTP POST, KHÔNG LƯU SQLITE TẠI ĐÂY NỮA
+        (Do đã được xử lý bởi Pipeline Offline-First ở HeadlessProcessor).
         """
         payload = {
             "camera_id": camera_id or self.camera_id,
@@ -344,22 +380,16 @@ class EdgeClient:
             )
 
             if resp.status_code == 200:
-                result = resp.json()
                 self._server_online = True
-                return result
+                return resp.json()
             else:
-                logger.error(f"Server lỗi {resp.status_code}: {resp.text}")
-                self._save_offline(payload, embedding, liveness_score, liveness_checked)
-                return {"status": "offline", "message": "Đã lưu offline"}
+                self._server_online = False
+                return {"status": "error", "message": f"HTTP {resp.status_code}"}
 
         except requests.ConnectionError:
-            logger.warning("📴 Mất kết nối Server — lưu offline")
             self._server_online = False
-            self._save_offline(payload, embedding, liveness_score, liveness_checked)
-            return {"status": "offline", "message": "Đã lưu offline"}
+            return {"status": "offline", "message": "ConnectionError"}
         except Exception as e:
-            logger.error(f"Lỗi gửi attendance: {e}")
-            self._save_offline(payload, embedding, liveness_score, liveness_checked)
             return {"status": "error", "message": str(e)}
 
     def _save_offline(self, payload, embedding, liveness_score, liveness_checked):
@@ -408,7 +438,7 @@ class EdgeClient:
             try:
                 # 1. Sync offline records
                 if self.check_server():
-                    self._push_offline_records()
+                    self._push_offline_records_new()
                     
                     # [NEW] Thường xuyên cập nhật danh sách camera động
                     self.report_status()
@@ -481,55 +511,33 @@ class EdgeClient:
                     break
                 time.sleep(1)
 
-    def _push_offline_records(self):
-        """Đẩy các bản ghi offline lên Server."""
-        try:
-            with sqlite3.connect(self._db_path) as conn:
-                rows = conn.execute(
-                    "SELECT id, camera_id, timestamp, embedding, liveness_score, liveness_checked "
-                    "FROM offline_attendance WHERE synced = 0 ORDER BY id"
-                ).fetchall()
+    def _push_offline_records_new(self):
+        """Đọc từ attendance_cache (Offline-First) và push lên Server."""
+        from local_cache.attendance_cache import attendance_cache
+        
+        pending_records = attendance_cache.get_all_pending(limit=20)
+        if not pending_records:
+            return
 
-                if not rows:
-                    return
+        logger.info(f"🔄 Đang đồng bộ {len(pending_records)} bản ghi offline...")
+        
+        success_count = 0
+        for record in pending_records:
+            result = self.send_attendance_raw(
+                embedding=record["embedding"],
+                camera_id=record["camera_id"],
+                liveness_score=record["liveness_score"],
+                liveness_checked=record["liveness_checked"]
+            )
+            
+            if result.get("status") == "success" or result.get("status") == "ignored":
+                attendance_cache.remove_pending(record["id"])
+                success_count += 1
+            else:
+                attendance_cache.mark_failed(record["id"], result.get("message", "API Error"))
 
-                logger.info(f"🔄 Đồng bộ {len(rows)} bản ghi offline...")
-
-                for row in rows:
-                    rid, cam_id, ts, emb_bytes, ls, lc = row
-                    embedding = np.frombuffer(emb_bytes, dtype=np.float32)
-
-                    payload = {
-                        "camera_id": cam_id,
-                        "timestamp": ts,
-                        "embedding": embedding.tolist(),
-                        "liveness_score": ls,
-                        "liveness_checked": bool(lc),
-                    }
-
-                    try:
-                        resp = requests.post(
-                            f"{self.server_url}/api/attendance",
-                            json=payload,
-                            headers=self._headers(),
-                            timeout=5,
-                        )
-                        if resp.status_code == 200:
-                            conn.execute(
-                                "UPDATE offline_attendance SET synced = 1 WHERE id = ?",
-                                (rid,),
-                            )
-                            conn.commit()
-                            logger.success(f"✅ Đồng bộ offline record #{rid} thành công")
-                        else:
-                            logger.warning(f"Server từ chối record #{rid}: {resp.text}")
-                            break
-                    except Exception:
-                        logger.warning("Mất kết nối khi sync — dừng batch")
-                        break
-
-        except Exception as e:
-            logger.error(f"Lỗi push offline: {e}")
+        if success_count > 0:
+            logger.success(f"✅ Đã đồng bộ thành công {success_count} bản ghi.")
 
     def get_offline_count(self) -> int:
         """Đếm số bản ghi chờ đồng bộ."""

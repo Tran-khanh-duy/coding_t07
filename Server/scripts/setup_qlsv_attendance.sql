@@ -19,6 +19,21 @@ ALTER TABLE hocvien
 
 CREATE INDEX IF NOT EXISTS IX_hocvien_IDLop ON hocvien(IDLop);
 
+-- ── 1.2. Danh mục Ký túc xá ───────────────────────────────────────
+CREATE TABLE IF NOT EXISTS ToaNha (
+    MaToa VARCHAR(10) PRIMARY KEY,   -- E1, E2, E3, E4, E5, E6
+    TenToa VARCHAR(50) NOT NULL      -- Tên hiển thị (VD: Tòa E1)
+);
+
+CREATE TABLE IF NOT EXISTS Phong (
+    MaPhong VARCHAR(20) PRIMARY KEY, -- 401E4, 102E1...
+    Tang INT NOT NULL,
+    MaToa VARCHAR(10) NOT NULL,      -- Tham chiếu đến bảng ToaNha
+    TenPhong VARCHAR(10) NOT NULL,   -- Tên phòng trơn (VD: 401, 107)
+    
+    FOREIGN KEY (MaToa) REFERENCES ToaNha(MaToa) ON UPDATE CASCADE
+);
+
 -- ── 2. FaceEmbeddings ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS FaceEmbeddings (
     embedding_id     INT AUTO_INCREMENT PRIMARY KEY,

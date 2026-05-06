@@ -189,3 +189,19 @@ class EmbeddingCache:
     def __repr__(self):
         shape = self.embeddings.shape if self.embeddings is not None else None
         return f"EmbeddingCache(size={self.size}, shape={shape})"
+
+
+# ─────────────────────────────────────────────
+@dataclass
+class Building:
+    ma_toa: str
+    ten_toa: str
+
+
+# ─────────────────────────────────────────────
+@dataclass
+class Room:
+    ma_phong: str
+    tang: int
+    ma_toa: str
+    ten_phong: str
