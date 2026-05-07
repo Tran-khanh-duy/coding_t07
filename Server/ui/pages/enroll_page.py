@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ui.styles.theme import Colors, card_style, badge_style, combo_style, input_style
 from ui.widgets.camera_preview import CameraPreviewWidget
-from config import CAMERAS
+import requests
 
 
 # ─────────────────────────────────────────────
@@ -44,9 +44,9 @@ class CaptureWorker(QThread):
         self._frames      = []
         self._last_capture_time = 0
 
-    def start_capture(self):
+    def start_capture(self, existing_frames=None):
         self._capturing = True
-        self._frames    = []
+        self._frames    = list(existing_frames) if existing_frames else []
 
     def stop_capture(self):
         self._capturing = False
@@ -718,13 +718,22 @@ class EnrollPage(QWidget):
             logger.error(f"Error checking student code: {e}")
 
     def _load_cameras(self):
+        """Load danh sách camera từ DB qua Server API."""
         self._cmb_camera.clear()
-        # Chuyển đổi danh sách camera thành các luồng cấu hình cố định của Mini PC KTX E4
-        self._cmb_camera.addItem("KTX E4 - Tầng 1 (192.168.1.17)", "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0")
-        self._cmb_camera.addItem("KTX E4 - Tầng 2 (192.168.1.23)", "rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0")
-        self._cmb_camera.addItem("KTX E4 - Tầng 3 (192.168.1.19)", "rtsp://admin:a1234567@192.168.1.19:554/cam/realmonitor?channel=1&subtype=0")
-        self._cmb_camera.addItem("KTX E4 - Tầng 4 (192.168.1.20)", "rtsp://admin:a1234567@192.168.1.20:554/cam/realmonitor?channel=1&subtype=0")
-        self._cmb_camera.addItem("KTX E4 - Tầng 5 (192.168.1.21)", "rtsp://admin:a1234567@192.168.1.21:554/cam/realmonitor?channel=1&subtype=0")
+        try:
+            resp = requests.get(
+                "http://127.0.0.1:9696/api/system/cameras/edge-list",
+                headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"},
+                timeout=3
+            )
+            if resp.status_code == 200:
+                cameras = resp.json().get("cameras", [])
+                for cam in cameras:
+                    label = f"{cam.get('name', '?')} ({cam.get('source','').split('@')[-1].split('/')[0]})"
+                    self._cmb_camera.addItem(label, cam.get("source"))
+        except Exception:
+            pass
+        # Fallback: cứ thêm camera USB nếu danh sách rỗng hoặc tất cả
         self._cmb_camera.addItem("Camera tích hợp / USB mặc định", 0)
         self._btn_camera.setEnabled(True)
 
@@ -806,6 +815,7 @@ class EnrollPage(QWidget):
         self._btn_camera.setText("📷  MỞ CAMERA")
         self._btn_camera.setStyleSheet(self._btn_camera.styleSheet().replace(Colors.RED_LT, Colors.BG_CARD).replace(Colors.RED, Colors.TEXT))
         self._btn_capture.setEnabled(False)
+        self._btn_capture.setText("📸  BẮT ĐẦU CHỤP")
 
     def _start_capture(self):
         if not self._current_student_id:
@@ -813,21 +823,55 @@ class EnrollPage(QWidget):
             return
         if not self._capture_worker: return
         
-        self._progress_bar.setValue(0)
-        self._lbl_count.setText("0 / 15")
-        for dot in self._dots:
-            dot.setText("○")
-            dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 14px;")
+        valid_count = len(self._captured_frames)
+        if valid_count == 0:
+            self._progress_bar.setValue(0)
+            self._lbl_count.setText("0 / 15")
+            for dot in self._dots:
+                dot.setText("○")
+                dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 18px;")
+            self._result_card.hide()
+        else:
+            self._progress_bar.setValue(valid_count)
+            self._lbl_count.setText(f"{valid_count} / 15")
+            for idx, dot in enumerate(self._dots):
+                if idx < valid_count:
+                    dot.setText("●")
+                    dot.setStyleSheet(f"color: {Colors.GREEN}; font-size: 18px;")
+                else:
+                    dot.setText("○")
+                    dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 18px;")
             
-        self._captured_frames = []
         self._btn_enroll.setEnabled(False)
-        self._result_card.hide()
-        self._capture_worker.start_capture()
+        self._capture_worker.start_capture(existing_frames=self._captured_frames)
         self._btn_capture.setEnabled(False)
         self._btn_capture.setText("📸  ĐANG CHỤP...")
         self._lbl_guide.setText("✅  Hệ thống đang chụp tự động — Vui lòng nhìn thẳng")
 
     def _finish_enrollment(self):
+        if self._btn_enroll.text() == "🎯  THỬ LẠI":
+            valid_count = len(self._captured_frames)
+            self._progress_bar.setValue(valid_count)
+            self._lbl_count.setText(f"{valid_count} / 15")
+            for idx, dot in enumerate(self._dots):
+                if idx < valid_count:
+                    dot.setText("●")
+                    dot.setStyleSheet(f"color: {Colors.GREEN}; font-size: 18px;")
+                else:
+                    dot.setText("○")
+                    dot.setStyleSheet(f"color: {Colors.BORDER_LT}; font-size: 18px;")
+            
+            if not self._camera_active:
+                self._open_camera()
+            
+            self._btn_capture.setEnabled(True)
+            self._btn_capture.setText("📸  BẮT ĐẦU CHỤP")
+            self._btn_enroll.setEnabled(False)
+            self._btn_enroll.setText("🎯  HOÀN TẤT ĐĂNG KÝ")
+            self._lbl_guide.setText(f"💡 Đã giữ {valid_count} ảnh đạt chuẩn. Nhấn 'Bắt đầu chụp' để chụp bù {15 - valid_count} ảnh còn lại.")
+            self._result_card.hide()
+            return
+
         if not self._captured_frames:
             QMessageBox.warning(self, "Chưa có ảnh", "Vui lòng chụp ảnh trước!")
             return
@@ -865,6 +909,7 @@ class EnrollPage(QWidget):
             self._result_card.setStyleSheet(f"background: {Colors.RED}20; border : none {Colors.RED}44; border-radius: 12px;")
             self._btn_enroll.setText("🎯  THỬ LẠI")
             self._btn_enroll.setEnabled(True)
+            self._captured_frames = getattr(result, "valid_frames", [])
 
     def _reload_and_notify(self):
         """
@@ -887,7 +932,7 @@ class EnrollPage(QWidget):
                 import requests
                 resp = requests.post(
                     "http://127.0.0.1:9696/api/reload-cache",
-                    headers={"X-API-Key": "faceattend_secret_2026"},
+                    headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"},
                     timeout=3
                 )
                 if resp.ok:

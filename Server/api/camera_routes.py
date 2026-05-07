@@ -1,6 +1,7 @@
 import base64
 from datetime import datetime
 from typing import Optional, Any
+# pyrefly: ignore [missing-import]
 from fastapi import APIRouter, Security, HTTPException, Query, Response
 from pydantic import BaseModel
 from loguru import logger
@@ -14,7 +15,7 @@ router = APIRouter(prefix="/api/system", tags=["System & Cameras"])
 class CommandPayload(BaseModel):
     command: str
     session_id: Optional[int] = None
-    class_id: Optional[int] = None
+    class_id: Optional[str] = None
     target_camera: Optional[str] = None
 
 class FramePayload(BaseModel):
@@ -28,12 +29,63 @@ class EdgeStatusPayload(BaseModel):
     ip_address: Optional[str] = "Unknown"
     timestamp: str
 
+# ─── Endpoint dành riêng cho Mini PC: lấy danh sách camera từ DB ────────────
+
+@router.get("/cameras/edge-list")
+async def get_cameras_for_edge(
+    device_group: Optional[str] = Query(None, description="Lọc theo nhóm KTX, ví dụ 'KTX E4'"),
+    api_key: str = Security(verify_device_access)
+):
+    """
+    Mini PC gọi endpoint này khi khởi động để lấy danh sách camera
+    (bao gồm RTSP URL đã được build từ credentials trong DB).
+    Nếu truyền ?device_group=KTX+E4 sẽ chỉ lấy camera của KTX đó.
+    """
+    try:
+        cameras = camera_repo.get_for_edge(device_group=device_group)
+        return {
+            "status": "ok",
+            "count": len(cameras),
+            "cameras": cameras,
+        }
+    except Exception as e:
+        logger.error(f"Lỗi get_cameras_for_edge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ─── Endpoint CRUD camera (dành cho Server UI) ────────────────────────────────
+
+@router.get("/cameras")
+async def get_all_cameras(active_only: bool = Query(True)):
+    """Server UI lấy danh sách tất cả camera."""
+    cameras = camera_repo.get_all(active_only=active_only)
+    return [
+        {
+            "camera_id":    c.camera_id,
+            "camera_name":  c.camera_name,
+            "location_desc": c.location_desc,
+            "ip_address":   c.ip_address,
+            "username":     c.username,
+            "floor":        c.floor,
+            "rtsp_port":    c.rtsp_port,
+            "device_group": c.device_group,
+            "area_id":      c.area_id,
+            "resolution":   c.resolution,
+            "rtsp_url":     c.effective_rtsp_url,
+            "is_active":    c.is_active,
+        }
+        for c in cameras
+    ]
+
+# ─── Lệnh điều khiển Mini PC ─────────────────────────────────────────────────
+
 @router.get("/command")
 async def get_system_command(api_key: str = Security(verify_device_access)):
     """Mini PC polling lấy lệnh từ Server."""
-    cameras = camera_repo.get_all(active_only=False)
-    all_rtsp = [c.rtsp_url for c in cameras if c.rtsp_url]
-    
+    # Lấy danh sách RTSP URL từ DB (nguồn dữ liệu chính xác)
+    cameras = camera_repo.get_all(active_only=True)
+    all_rtsp = [c.effective_rtsp_url for c in cameras if c.effective_rtsp_url]
+
+    # Bổ sung thêm từ trạng thái động của Mini PC (nếu có camera ngoài DB)
     for dev_status in state_manager.get_all_edge_status().values():
         cam_status = dev_status.get("camera_status", {})
         for cam_id, info in cam_status.items():
@@ -41,7 +93,7 @@ async def get_system_command(api_key: str = Security(verify_device_access)):
                 src = info.get("source")
                 if src and src not in all_rtsp:
                     all_rtsp.append(src)
-    
+
     cmd_state = state_manager.get_command_state()
     return {
         "command": cmd_state["command"],
@@ -77,7 +129,7 @@ async def upload_frame(
         img_data = base64.b64decode(payload.image_b64)
         if len(img_data) < 100:
              logger.warning(f"⚠️ Nhận ảnh quá nhỏ ({len(img_data)} bytes) từ {payload.camera_id}")
-             
+
         state_manager.set_latest_frame(payload.camera_id, img_data, payload.detections)
         return {"status": "ok", "received_bytes": len(img_data)}
     except Exception as e:
@@ -91,12 +143,12 @@ async def get_frame(camera_id: str = Query(..., description="ID của camera c�
     if frame is None:
         available = state_manager.get_available_cameras()
         raise HTTPException(status_code=404, detail=f"No frame for {camera_id}. Available: {available}")
-        
+
     det_json = json.dumps(detections)
     det_b64 = base64.b64encode(det_json.encode()).decode()
 
     return Response(
-        content=frame, 
+        content=frame,
         media_type="image/jpeg",
         headers={"X-Face-Detections": det_b64}
     )

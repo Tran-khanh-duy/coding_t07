@@ -251,7 +251,7 @@ class CamerasPage(QWidget):
                 "command": "RETRY_CAMERA",
                 "target_camera": source
             }
-            resp = requests.post("http://127.0.0.1:9696/api/system/command", json=payload, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=2)
+            resp = requests.post("http://127.0.0.1:9696/api/system/command", json=payload, headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"}, timeout=2)
             if resp.status_code == 200:
                 QMessageBox.information(self, "Thành công", f"Đã gửi lệnh thử lại kết nối tới camera: {source}\nVui lòng chờ Mini PC xử lý!")
             else:

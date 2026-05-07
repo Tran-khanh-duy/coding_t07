@@ -32,6 +32,7 @@ class EnrollmentResult:
     photos_valid:  int
     avg_det_score: float
     error_msg:     str = ""
+    valid_frames:  list = field(default_factory=list)
 
     @property
     def summary(self) -> str:
@@ -243,7 +244,7 @@ class EnrollmentService:
                 logger.info(f"🔎 Định dạng ảnh đang truyền vào AI: {type(frames[0])}")
             # -------------------------------
 
-            embedding, avg_score, valid_count = face_engine.compute_enrollment_embedding(frames)
+            embedding, avg_score, valid_count, valid_photos = face_engine.compute_enrollment_embedding(frames)
             
             if embedding is not None and valid_count >= ai_config.min_enroll_photos:
                 embedding_repo.save_embedding(
@@ -278,6 +279,7 @@ class EnrollmentService:
                     photos_taken=len(frames),
                     photos_valid=valid_count,
                     avg_det_score=avg_score,
+                    valid_frames=valid_photos,
                 )
                 logger.success(result.summary)
                 return result
@@ -291,7 +293,8 @@ class EnrollmentService:
                     photos_taken=len(frames),
                     photos_valid=valid_count if valid_count else 0,
                     avg_det_score=avg_score if avg_score else 0,
-                    error_msg="Khuôn mặt không đạt chuẩn AI. Vui lòng chụp lại với ánh sáng tốt hơn!"
+                    error_msg="Khuôn mặt không đạt chuẩn AI. Vui lòng chụp lại với ánh sáng tốt hơn!",
+                    valid_frames=valid_photos if valid_photos else [],
                 )
         except Exception as e:
             import traceback

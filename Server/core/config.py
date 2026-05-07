@@ -31,7 +31,7 @@ for _dir in [MODELS_DIR, SNAPSHOTS_DIR, LOGS_DIR, REPORTS_DIR]:
 class ServerConfig:
     host: str = os.getenv("SERVER_HOST", "0.0.0.0")
     port: int = int(os.getenv("SERVER_PORT", "9696"))
-    allowed_ips: list = field(default_factory=lambda: os.getenv("ALLOWED_IPS", "127.0.0.1").split(","))
+    allowed_ips: list = field(default_factory=lambda: [ip.strip() for ip in os.getenv("ALLOWED_IPS", "127.0.0.1").split(",")])
     device_token: str = os.getenv("DEVICE_TOKEN", "faceattend_secret_2026")
     workers: int = int(os.getenv("SERVER_WORKERS", "1"))
     reload: bool = os.getenv("SERVER_RELOAD", "false").lower() == "true"
@@ -96,8 +96,8 @@ class AIConfig:
     )
     det_size:         tuple = (480, 480) 
     recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.65")) 
-    min_enroll_photos:  int = 5
-    max_enroll_photos:  int = 10
+    min_enroll_photos:  int = 12
+    max_enroll_photos:  int = 15
     embedding_size:   int   = 512
     attendance_cooldown_sec: int = int(os.getenv("ATTENDANCE_COOLDOWN", "60"))
     min_face_det_score: float = float(os.getenv("MIN_FACE_SCORE", "0.75"))

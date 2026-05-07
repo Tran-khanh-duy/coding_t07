@@ -28,7 +28,7 @@ if env_file.exists():
     load_dotenv(env_file, override=True)
 
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT.parent / "Server"))
+sys.path.append(str(ROOT.parent / "Server"))
 
 # Tạo các thư mục cần thiết
 for folder in ["logs", "models", "database"]:
@@ -44,7 +44,13 @@ def run_headless():
     print("=" * 60)
     print(f"  FACEATTEND EDGE (HEADLESS) — {edge_config.device_name}")
     print(f"  Server: {edge_config.server_url}")
-    print(f"  Camera Source: {edge_config.camera_source}")
+    cam_list = edge_config.camera_list
+    if cam_list:
+        print(f"  Camera ({len(cam_list)} cái từ DB):")
+        for c in cam_list:
+            print(f"    [{c.get('id','?')}] {c.get('name','?')} | {c.get('source','N/A')}")
+    else:
+        print("  Camera: Đang pull từ Server... (sẽ retry khi khởi động)")
     print(f"  AI Processing mode: ACTIVE")
     print("=" * 60)
 

@@ -156,12 +156,13 @@ class EmbeddingManager:
         """Trả về toàn bộ embeddings (dùng cho API sync xuống Mini PC)."""
         with self._rlock:
             return {
-                "student_ids": self.cache.student_ids,
+                "student_ids":   self.cache.student_ids,
                 "student_codes": self.cache.student_codes,
-                "full_names": self.cache.full_names,
-                "class_names": self.cache.class_names,
-                "class_ids": self.cache.class_ids,
-                "embeddings": self.cache.embeddings # Mảng numpy gốc
+                "full_names":    self.cache.full_names,
+                "class_names":   self.cache.class_names,
+                "class_ids":     self.cache.class_ids,
+                "class_codes":   self.cache.class_codes,   # ← fix: thêm class_codes
+                "embeddings":    self.cache.embeddings,
             }
 
     @property

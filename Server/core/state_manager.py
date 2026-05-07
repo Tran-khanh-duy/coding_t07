@@ -81,10 +81,24 @@ class RedisStateManager:
         pipe.get("state:target_camera")
         res = pipe.execute()
         
+        session_id_val = None
+        if res[1]:
+            try:
+                session_id_val = int(res[1])
+            except ValueError:
+                session_id_val = res[1].decode("utf-8")
+                
+        class_id_val = None
+        if res[2]:
+            try:
+                class_id_val = int(res[2])
+            except ValueError:
+                class_id_val = res[2].decode("utf-8")
+        
         return {
             "command": res[0].decode("utf-8") if res[0] else "STOP",
-            "session_id": int(res[1]) if res[1] else None,
-            "class_id": int(res[2]) if res[2] else None,
+            "session_id": session_id_val,
+            "class_id": class_id_val,
             "target_camera": res[3].decode("utf-8") if res[3] else None
         }
 

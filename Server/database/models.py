@@ -86,9 +86,47 @@ class Camera:
     resolution:    str                = "1280x720"
     area_id:       Optional[str]      = None
     is_active:     bool               = True
+    # Credentials — thêm từ migration 004
+    username:      Optional[str]      = "admin"
+    password:      Optional[str]      = None
+    floor:         Optional[int]      = None
+    rtsp_port:     int                = 554
+    device_group:  Optional[str]      = None
 
     def __post_init__(self):
         self.is_active = bool(self.is_active)
+        if self.rtsp_port is None:
+            self.rtsp_port = 554
+
+    @property
+    def effective_rtsp_url(self) -> Optional[str]:
+        """
+        Trả về RTSP URL hiệu lực:
+        - Nếu rtsp_url đã có sẵn trong DB → dùng trực tiếp.
+        - Nếu chưa → tự build từ ip_address, username, password, rtsp_port.
+        """
+        if self.rtsp_url:
+            return self.rtsp_url
+        if self.ip_address and self.username and self.password:
+            return (
+                f"rtsp://{self.username}:{self.password}"
+                f"@{self.ip_address}:{self.rtsp_port}"
+                f"/cam/realmonitor?channel=1&subtype=0"
+            )
+        return None
+
+    def to_edge_dict(self) -> dict:
+        """Chuyển thành dict để gửi cho Mini PC qua API."""
+        return {
+            "id": f"CAM_{self.camera_id:02d}",
+            "camera_id": self.camera_id,
+            "name": self.camera_name,
+            "source": self.effective_rtsp_url or "",
+            "floor": self.floor,
+            "device_group": self.device_group,
+            "area_id": self.area_id,
+            "is_active": self.is_active,
+        }
 
     def __str__(self):
         return f"{self.camera_name}"

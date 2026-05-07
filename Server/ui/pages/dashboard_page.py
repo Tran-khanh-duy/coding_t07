@@ -17,7 +17,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ui.styles.theme import Colors
-from config import db_config, ai_config, CAMERAS
+from config import db_config, ai_config
 
 def get_gpu_name():
     try:
@@ -644,7 +644,7 @@ class DashboardPage(QWidget):
             # Cập nhật URL này trỏ đến API thực tế của Server bạn
             # Truyền tham số date=YYYY-MM-DD để Server query database
             url = f"http://127.0.0.1:9696/api/dashboard/stats?date={date_str}"
-            resp = requests.get(url, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=2)
+            resp = requests.get(url, headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"}, timeout=2)
             
             if resp.status_code == 200:
                 data = resp.json()

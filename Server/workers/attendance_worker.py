@@ -111,11 +111,28 @@ class AttendanceWorker:
                 
                 # Gửi thông báo qua Telegram (optional)
                 try:
-                    from api_server import send_telegram_msg
-                    msg = f"✅ ĐIỂM DANH (WORKER)\n👤 Học viên: {task.full_name}\n🆔 MSSV: {task.student_code}\n🏫 Lớp: {task.class_name}\n🕒 Thời gian: {task.timestamp}\n🎯 Độ tin cậy: {task.recognition_score*100:.1f}%"
-                    threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
-                except Exception:
-                    pass
+                    import sys
+                    from pathlib import Path
+                    root_dir = Path(__file__).parent.parent.parent
+                    if str(root_dir) not in sys.path:
+                        sys.path.insert(0, str(root_dir))
+                    from telegram_notifier import send_telegram_msg
+                    
+                    # 1. Tuỳ chọn: Gửi báo danh từng người (có thể bị nhiều tin nhắn, có thể comment lại)
+                    # msg = f"✅ ĐIỂM DANH (WORKER)\n👤 Học viên: {task.full_name}\n🆔 MSSV: {task.student_code}\n🏫 Lớp: {task.class_name}\n🕒 Thời gian: {task.timestamp}\n🎯 Độ tin cậy: {task.recognition_score*100:.1f}%"
+                    # threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
+                    
+                    # 2. Kiểm tra nếu lớp ĐỦ thì gửi thông báo
+                    absent_count = record_repo.get_class_absent_count(task.session_id, task.class_name)
+                    if absent_count == 0:
+                        redis_key = f"notified_full_{task.session_id}_{task.class_name}"
+                        if not self.redis.get(redis_key):
+                            self.redis.set(redis_key, "1", ex=86400) # Lưu 1 ngày
+                            msg_full = f"{task.class_name} - Đủ"
+                            threading.Thread(target=send_telegram_msg, args=(msg_full,), daemon=True).start()
+                            
+                except Exception as e:
+                    logger.error(f"Lỗi gửi Telegram (Lớp đủ): {e}")
             else:
                 raise Exception("Hàm record_attendance trả về False")
 

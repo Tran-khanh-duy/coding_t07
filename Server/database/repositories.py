@@ -237,7 +237,7 @@ class FaceEmbeddingRepository:
         rows = get_db().execute(
             """
             SELECT hv.id, hv.MaHV, hv.HoTen, fe.embedding_vector,
-                   hv.IDLop, l.TenLop, hv.IDLop
+                   hv.IDLop, l.TenLop, l.IDLop
             FROM FaceEmbeddings fe
             JOIN hocvien hv ON hv.id = fe.student_id
             LEFT JOIN lop l ON l.IDLop = hv.IDLop
@@ -246,7 +246,7 @@ class FaceEmbeddingRepository:
             """
         )
         if not rows:
-            logger.warning("Không có embedding nào trong database!")
+            logger.warning("Khong co embedding nao trong database!")
             return EmbeddingCache()
 
         cache = EmbeddingCache()
@@ -270,7 +270,7 @@ class FaceEmbeddingRepository:
             norms = np.linalg.norm(mat, axis=1, keepdims=True)
             cache.embeddings = mat / np.maximum(norms, 1e-8)
 
-        logger.success(f"Loaded {cache.size} embeddings vào RAM")
+        logger.success(f"Loaded {cache.size} embeddings vao RAM")
         return cache
 
     def get_all_active(self) -> list:
@@ -307,43 +307,100 @@ class FaceEmbeddingRepository:
 #  CAMERA REPOSITORY
 # ══════════════════════════════════════════════
 class CameraRepository:
+    # SELECT đủ 13 cột (8 cột gốc + 5 cột từ migration 004)
     _SQL = """
         SELECT camera_id, camera_name, location_desc,
-               rtsp_url, ip_address, resolution, area_id, is_active
+               rtsp_url, ip_address, resolution, area_id, is_active,
+               COALESCE(username, 'admin'),
+               password,
+               floor,
+               COALESCE(rtsp_port, 554),
+               device_group
         FROM Cameras
     """
 
+    def _row_to_camera(self, r) -> 'Camera':
+        """Map một DB row (13 cột) → Camera dataclass."""
+        return Camera(
+            camera_id    = r[0],
+            camera_name  = r[1],
+            location_desc= r[2],
+            rtsp_url     = r[3],
+            ip_address   = r[4],
+            resolution   = r[5] or '1280x720',
+            area_id      = r[6],
+            is_active    = bool(r[7]),
+            username     = r[8] or 'admin',
+            password     = r[9],
+            floor        = r[10],
+            rtsp_port    = int(r[11]) if r[11] else 554,
+            device_group = r[12],
+        )
+
     def get_all(self, active_only: bool = True) -> list:
         if active_only:
-            rows = get_db().execute(f"{self._SQL} WHERE is_active = 1 ORDER BY camera_name")
+            rows = get_db().execute(f"{self._SQL} WHERE is_active = 1 ORDER BY floor, camera_id")
         else:
-            rows = get_db().execute(f"{self._SQL} ORDER BY camera_name")
-        return [Camera(*r) for r in rows]
+            rows = get_db().execute(f"{self._SQL} ORDER BY floor, camera_id")
+        return [self._row_to_camera(r) for r in rows]
 
     def get_by_id(self, camera_id: int) -> Optional[Camera]:
         rows = get_db().execute(f"{self._SQL} WHERE camera_id = ?", (camera_id,))
-        return Camera(*rows[0]) if rows else None
+        return self._row_to_camera(rows[0]) if rows else None
+
+    def get_for_edge(self, device_group: str = None) -> list:
+        """
+        Trả về list dict để gửi cho Mini PC qua /api/system/cameras/edge-list.
+        Bao gồm RTSP URL đầy đủ (build từ credentials nếu chưa có sẵn).
+        Nếu có device_group, chỉ lấy camera thuộc nhóm đó.
+        """
+        if device_group:
+            rows = get_db().execute(
+                f"{self._SQL} WHERE is_active = 1 AND device_group = ? ORDER BY floor, camera_id",
+                (device_group,)
+            )
+        else:
+            rows = get_db().execute(
+                f"{self._SQL} WHERE is_active = 1 ORDER BY floor, camera_id"
+            )
+        return [self._row_to_camera(r).to_edge_dict() for r in rows]
 
     def create(self, camera_name: str, location_desc: str = None,
                rtsp_url: str = None, ip_address: str = None,
-               resolution: str = "1280x720", area_id: str = None) -> int:
+               resolution: str = '1280x720', area_id: str = None,
+               username: str = 'admin', password: str = None,
+               floor: int = None, rtsp_port: int = 554,
+               device_group: str = None) -> int:
         return get_db().execute_insert(
-            "INSERT INTO Cameras (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (camera_name, location_desc, rtsp_url, ip_address, resolution, area_id),
+            """
+            INSERT INTO Cameras
+                (camera_name, location_desc, rtsp_url, ip_address,
+                 resolution, area_id, username, password, floor, rtsp_port, device_group)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (camera_name, location_desc, rtsp_url, ip_address,
+             resolution, area_id, username, password, floor, rtsp_port, device_group),
         )
 
     def update(self, camera_id: int, **kwargs) -> bool:
-        allowed = {"camera_name", "location_desc", "rtsp_url", "ip_address", "resolution", "area_id", "is_active"}
+        allowed = {
+            'camera_name', 'location_desc', 'rtsp_url', 'ip_address',
+            'resolution', 'area_id', 'is_active',
+            'username', 'password', 'floor', 'rtsp_port', 'device_group'
+        }
         cols = {k: v for k, v in kwargs.items() if k in allowed}
         if not cols:
             return False
-        set_clause = ", ".join(f"{k} = ?" for k in cols)
+        set_clause = ', '.join(f'{k} = ?' for k in cols)
         params = list(cols.values()) + [camera_id]
-        get_db().execute(f"UPDATE Cameras SET {set_clause} WHERE camera_id = ?", tuple(params), commit=True)
+        get_db().execute(
+            f'UPDATE Cameras SET {set_clause} WHERE camera_id = ?',
+            tuple(params), commit=True
+        )
         return True
 
     def delete(self, camera_id: int) -> bool:
-        get_db().execute("DELETE FROM Cameras WHERE camera_id = ?", (camera_id,), commit=True)
+        get_db().execute('DELETE FROM Cameras WHERE camera_id = ?', (camera_id,), commit=True)
         return True
 
 
@@ -404,12 +461,19 @@ class SessionRepository:
     def create_session(self, class_id, subject_name: str, session_date=None) -> int:
         # --- NÂNG CẤP: Hỗ trợ điểm danh theo Tòa nhà ---
         # Đảm bảo class_id (có thể là MaToa) tồn tại trong bảng lop để không lỗi Foreign Key
+        if class_id is None or class_id == "" or class_id == "ALL":
+            class_id = "ALL"
+            ten_hien_thi = "Tất cả tòa nhà"
+        else:
+            ten_hien_thi = f"Nhóm {class_id}"
+
         db = get_db()
         exists = db.execute("SELECT 1 FROM lop WHERE IDLop = ?", (class_id,))
         if not exists:
             # Thử tìm tên tòa nhà nếu class_id là MaToa
             bld_row = db.execute("SELECT TenToa FROM ToaNha WHERE MaToa = ?", (class_id,))
-            ten_hien_thi = bld_row[0][0] if bld_row else f"Nhóm {class_id}"
+            if bld_row:
+                ten_hien_thi = bld_row[0][0]
             db.execute("INSERT INTO lop (IDLop, TenLop) VALUES (?, ?)", (class_id, ten_hien_thi), commit=True)
             logger.info(f"Đã tự động tạo 'Lớp ảo' cho Tòa nhà/Nhóm: {class_id}")
 
@@ -432,15 +496,24 @@ class SessionRepository:
 
     def _prefill_absent(self, session_id: int, class_id):
         # Chèn tất cả học viên thuộc lớp HOẶC tòa nhà này vào bảng điểm danh với trạng thái ABSENT
-        # Điều này cho phép điểm danh theo Tòa nhà mà không cần đổi IDLop của học viên
-        get_db().execute(
-            """
-            INSERT INTO AttendanceRecords (session_id, student_id, status)
-            SELECT ?, hv.id, 'ABSENT' FROM hocvien hv 
-            WHERE hv.IDLop = ? OR hv.building = ?
-            """,
-            (session_id, class_id, class_id), commit=True,
-        )
+        # Nếu class_id là "ALL", chèn TẤT CẢ học viên
+        if class_id == "ALL" or class_id is None:
+            get_db().execute(
+                """
+                INSERT INTO AttendanceRecords (session_id, student_id, status)
+                SELECT ?, hv.id, 'ABSENT' FROM hocvien hv
+                """,
+                (session_id,), commit=True,
+            )
+        else:
+            get_db().execute(
+                """
+                INSERT INTO AttendanceRecords (session_id, student_id, status)
+                SELECT ?, hv.id, 'ABSENT' FROM hocvien hv 
+                WHERE hv.IDLop = ? OR hv.building = ?
+                """,
+                (session_id, class_id, class_id), commit=True,
+            )
 
     def start_session(self, session_id: int) -> bool:
         get_db().execute(
@@ -515,6 +588,7 @@ class AttendanceRecordRepository:
                 session_id=session_id, student_id=student_id,
                 status="PRESENT", check_in_time=now,
                 recognition_score=recognition_score,
+                camera_id=camera_id,
             )
             if rid < 0:
                 logger.error(f"record_attendance: upsert failed s={session_id} u={student_id}")
@@ -536,16 +610,18 @@ class AttendanceRecordRepository:
 
     def upsert(self, session_id: int, student_id: int,
                status: str, check_in_time=None,
-               recognition_score: float = 0) -> int:
+               recognition_score: float = 0,
+               camera_id: int = None) -> int:
         get_db().execute(
             """
-            INSERT INTO AttendanceRecords (session_id, student_id, status, check_in_time, recognition_score)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO AttendanceRecords
+                (session_id, student_id, status, check_in_time, recognition_score, camera_id)
+            VALUES (?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
-                status = ?, check_in_time = ?, recognition_score = ?
+                status = ?, check_in_time = ?, recognition_score = ?, camera_id = ?
             """,
-            (session_id, student_id, status, check_in_time, recognition_score,
-             status, check_in_time, recognition_score),
+            (session_id, student_id, status, check_in_time, recognition_score, camera_id,
+             status, check_in_time, recognition_score, camera_id),
             commit=True,
         )
         rows = get_db().execute(
@@ -588,6 +664,19 @@ class AttendanceRecordRepository:
                 "room":               r[11] or "",
             })
         return result
+
+    def get_class_absent_count(self, session_id: int, class_name: str) -> int:
+        rows = get_db().execute(
+            """
+            SELECT COUNT(*)
+            FROM AttendanceRecords ar
+            INNER JOIN hocvien hv ON hv.id = ar.student_id
+            LEFT JOIN lop l ON l.IDLop = hv.IDLop
+            WHERE ar.session_id = ? AND ar.status = 'ABSENT' AND l.TenLop = ?
+            """,
+            (session_id, class_name),
+        )
+        return rows[0][0] if rows else 0
 
     def is_already_recorded(self, session_id: int, student_id: int) -> bool:
         rows = get_db().execute(

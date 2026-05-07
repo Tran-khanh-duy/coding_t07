@@ -141,6 +141,7 @@ class RemoteStreamWorker(QThread):
         
         # Dùng Session() để tái sử dụng TCP connection, giúp mượt hơn và giảm overhead.
         session = requests.Session()
+        fail_count = 0
         
         while True:
             self._mutex.lock()
@@ -188,11 +189,25 @@ class RemoteStreamWorker(QThread):
                         self.error_occurred.emit("Lỗi Decode Ảnh")
                 else:
                     # Log lỗi chi tiết ra UI terminal
-                    msg = f"Server {resp.status_code}"
+                    msg = f"Lỗi Server ({resp.status_code})"
                     if resp.status_code == 404:
-                        msg = "Server chưa có hình (Chờ Mini PC tải lên)"
+                        # Thử lấy danh sách camera có sẵn từ detail response
+                        fail_count += 1
+                        try:
+                            detail = resp.json().get("detail", "")
+                            available_info = ""
+                            if "Available:" in detail:
+                                available_info = f" (Sẵn có: {detail.split('Available:')[1]})"
+                            msg = f"Server chưa có hình{available_info}"
+                        except:
+                            msg = "Server chưa có hình (Đang đợi Mini PC)"
                         
-                    logger.error(f"[ERROR] UI Stream {self.camera_id} fail: {msg}")
+                        if fail_count % 20 == 0:
+                            logger.warning(f"[WAIT] {self.camera_id}: {msg}")
+                    else:
+                        logger.error(f"[ERROR] UI Stream {self.camera_id} fail: {msg}")
+
+                    
                     self.error_occurred.emit(msg)
                     time.sleep(0.5)
 
@@ -484,7 +499,7 @@ class AttendancePage(QWidget):
                 if cmd == "START":
                     payload["session_id"] = self._session_id
                     
-                requests.post("http://127.0.0.1:9696/api/system/command", json=payload, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=2)
+                requests.post("http://127.0.0.1:9696/api/system/command", json=payload, headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"}, timeout=2)
             except: pass
         import threading
         threading.Thread(target=update_target, daemon=True).start()
@@ -548,20 +563,12 @@ class AttendancePage(QWidget):
         sc_layout.addWidget(sc_title)
 
         self._refresh_cameras()
+        self._cmb_session_class = QComboBox() # Khởi tạo ẩn tránh lỗi reference
 
-        # ── Chọn Tòa nhà (thay cho chọn lớp) ──
-        class_lbl = QLabel("Tòa nhà")
-        class_lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; border: none; background: transparent; padding-top: 6px;")
-        self._cmb_session_class = QComboBox()
-        self._cmb_session_class.setStyleSheet(combo_style())
-        self._cmb_session_class.setPlaceholderText("-- Chọn tòa nhà --")
-        sc_layout.addWidget(class_lbl)
-        sc_layout.addWidget(self._cmb_session_class)
-        self._load_buildings()
-
-        # Buổi học
-        subj_lbl = QLabel("Buổi học")
+        subj_lbl = QLabel("Buổi học / Ca học")
         subj_lbl.setStyleSheet(f"color: {Colors.TEXT_DIM}; font-size: 12px; font-weight: 600; border: none; background: transparent; padding-top: 6px;")
+        sc_layout.addWidget(subj_lbl)
+
         self._inp_subject = QComboBox()
         self._inp_subject.addItems([
             "🌅 Sáng (0h – 9h)",
@@ -866,13 +873,11 @@ class AttendancePage(QWidget):
     def _load_session_classes(self):
         """Giữ lại để tương thích hoặc debug, nhưng không dùng chính nữa."""
         pass
-
     def _start_session(self):
-        # ── Lấy tòa nhà đã chọn (MaToa) ──
+        # ── Lấy tòa nhà đã chọn (MaToa), mặc định "ALL" nếu chưa chọn ──
         class_id = self._cmb_session_class.currentData()
         if not class_id:
-            QMessageBox.warning(self, "Thiếu thông tin", "Vui lòng chọn tòa nhà trước khi bắt đầu điểm danh!")
-            return
+            class_id = "ALL"
 
         camera_source = self._selected_camera_source
         qdate = self._date_picker.date()
@@ -913,7 +918,7 @@ class AttendancePage(QWidget):
                         "session_id": sid,
                         "class_id": class_id,
                         "target_camera": camera_source
-                    }, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=5)
+                    }, headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"}, timeout=5)
                 except Exception as ex:
                     logger.warning(f"Không thể gửi lệnh START tới API: {ex}")
             
@@ -964,7 +969,7 @@ class AttendancePage(QWidget):
                 try:
                     requests.post("http://127.0.0.1:9696/api/system/command", json={
                         "command": "STOP"
-                    }, headers={"X-API-Key": "faceattend_secret_2026"}, timeout=5)
+                    }, headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"}, timeout=5)
                 except: pass
             
             import threading
@@ -1114,6 +1119,11 @@ class AttendancePage(QWidget):
         if self._worker and not self._worker._paused: self._worker.pause()
         super().hideEvent(event)
 
+    def showEvent(self, event):
+        if self._worker and self._worker._paused: self._worker.resume()
+        self._refresh_cameras()
+        self._load_buildings()
+        super().showEvent(event)
     def showEvent(self, event):
         if self._worker and self._worker._paused: self._worker.resume()
         self._refresh_cameras()

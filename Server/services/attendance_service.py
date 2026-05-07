@@ -155,10 +155,25 @@ class AttendanceService:
         self._reset_stats()
 
         logger.success(
-            f"▶ Bắt đầu điểm danh: [{self._session.subject_name}] "
+            f"▶ Bắt đầu phiên điểm danh: [{self._session.subject_name}] "
             f"| Lớp: {self._session.class_name} "
             f"| Session ID: {session_id}"
         )
+        
+        # 1. Gửi Telegram bắt đầu phiên điểm danh
+        try:
+            import sys
+            from pathlib import Path
+            root_dir = Path(__file__).parent.parent.parent
+            if str(root_dir) not in sys.path:
+                sys.path.insert(0, str(root_dir))
+            from telegram_notifier import send_telegram_msg
+            import threading
+            msg = f"Bắt đầu phiên điểm danh:\nLớp: {self._session.class_name}\nMôn: {self._session.subject_name}"
+            threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
+        except Exception as e:
+            logger.error(f"Lỗi gửi Telegram: {e}")
+
         return True
 
     def end_session(self) -> Optional[AttendanceSession]:
@@ -182,6 +197,44 @@ class AttendanceService:
             f"Có mặt: {session.present_count} | "
             f"Vắng: {session.absent_count}"
         )
+        # 3. Gửi Telegram kết thúc phiên điểm danh
+        try:
+            import sys
+            from pathlib import Path
+            root_dir = Path(__file__).parent.parent.parent
+            if str(root_dir) not in sys.path:
+                sys.path.insert(0, str(root_dir))
+            from telegram_notifier import send_telegram_msg
+            import threading
+            from database.repositories import record_repo
+            
+            # Lấy báo cáo của phiên
+            report = record_repo.get_session_report(session.session_id)
+            
+            # Gom nhóm các sinh viên vắng mặt theo lớp
+            absent_by_class = {}
+            for r in report:
+                if r["status"] == "ABSENT":
+                    c_name = r["class_name"]
+                    # Lấy tên cuối cùng (Tên) từ Họ và Tên (ví dụ "Huỳnh Quốc Khải" -> "Khải")
+                    name_parts = r["full_name"].strip().split()
+                    short_name = name_parts[-1] if name_parts else r["full_name"]
+                    
+                    if c_name not in absent_by_class:
+                        absent_by_class[c_name] = []
+                    absent_by_class[c_name].append(short_name)
+                    
+            if absent_by_class:
+                for c_name, absent_list in absent_by_class.items():
+                    msg = f"{c_name} vắng: {', '.join(absent_list)}"
+                    threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
+            else:
+                msg = f"Kết thúc phiên điểm danh môn {session.subject_name}. Tất cả các lớp đều đi đủ!"
+                threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
+                
+        except Exception as e:
+            logger.error(f"Lỗi gửi Telegram khi kết thúc: {e}")
+
         return session
 
     # ─── Xử lý kết quả nhận diện ──────────────

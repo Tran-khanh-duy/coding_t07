@@ -1,3 +1,4 @@
+
 """
 edge_client.py
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -27,16 +28,19 @@ from pathlib import Path
 
 import sys
 sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent / "Server"))
+sys.path.append(str(Path(__file__).parent.parent / "Server"))
 
 # Tắt log nhiễu của OpenCV (index out of range)
 os.environ["OPENCV_LOG_LEVEL"] = "OFF"
 os.environ["OPENCV_VIDEOIO_PRIORITY_MSMF"] = "0"
 
 from config import edge_config, ai_config, anti_spoof_config
+# pyrefly: ignore [missing-import]
 from database.models import EmbeddingCache
+# pyrefly: ignore [missing-import]
 from utils.camera_utils import detect_available_cameras
-from utils.camera_discovery import discover_network_cameras, generate_rtsp_links
+# pyrefly: ignore [missing-import]
+from utils.camera_utils import discover_network_cameras, generate_rtsp_links
 from local_cache.embedding_sync import embedding_sync
 
 
@@ -49,7 +53,8 @@ class EdgeClient:
     def __init__(self):
         self.server_url = edge_config.server_url.rstrip("/")
         self.api_key = edge_config.api_key
-        self.camera_id = edge_config.camera_id
+        # camera_id fallback cho global embedding cache
+        self.camera_id = "GLOBAL"
 
         # Embedding cache cục bộ
         # Global cache cũ (nếu không có camera_id)
@@ -108,7 +113,10 @@ class EdgeClient:
         self._discovery_thread.start()
 
         # [NEW] Trạng thái camera sẽ được báo cáo định kỳ trong _sync_loop
-        logger.info(f"EdgeClient khởi tạo | Server: {self.server_url} | Camera: {self.camera_id}")
+        logger.info(f"EdgeClient khởi tạo | Server: {self.server_url} | Device: {edge_config.device_name}")
+
+        # Pull danh sách camera từ DB qua Server API ngay khi khởi động
+        self.pull_camera_list()
 
     # ─── Offline DB ───────────────────────────
 
@@ -223,14 +231,64 @@ class EdgeClient:
         """Cập nhật bộ đệm trạng thái từ Processor."""
         self._active_status_cache[camera_id] = is_active
 
+    # ─── Pull Camera List từ DB ─────────────────
+
+    def pull_camera_list(self) -> bool:
+        """
+        Kéo danh sách camera từ Server (dữ liệu từ bảng Cameras trong DB).
+        RTSP URL được build trên Server từ credentials lưu trong DB.
+        Cập nhật edge_config.camera_list để HeadlessProcessor dùng.
+        """
+        try:
+            params = {}
+            if getattr(edge_config, 'device_group', ''):
+                params['device_group'] = edge_config.device_group
+
+            resp = self._session.get(
+                f"{self.server_url}/api/system/cameras/edge-list",
+                params=params,
+                headers=self._headers(),
+                timeout=10,
+            )
+            if resp.status_code != 200:
+                logger.error(f"pull_camera_list: Server trả lỗi {resp.status_code}")
+                return False
+
+            data = resp.json()
+            cameras = data.get("cameras", [])
+            if not cameras:
+                logger.warning("⚠️ pull_camera_list: Server không có camera nào trong DB!")
+                return False
+
+            # Cập nhật danh sách runtime
+            edge_config.camera_list = cameras
+            names = [f"{c.get('name','?')} -> {c.get('source','?')}" for c in cameras]
+            logger.success(
+                f"✅ pull_camera_list: Đã tải {len(cameras)} camera từ DB:"
+            )
+            for n in names:
+                logger.info(f"   {n}")
+            return True
+
+        except requests.ConnectionError:
+            logger.warning("❌ pull_camera_list: Không thể kết nối Server (sẽ thử lại sau)")
+            self._server_online = False
+            return False
+        except Exception as e:
+            logger.error(f"pull_camera_list lỗi: {e}")
+            return False
+
     # ─── Pull Embeddings ──────────────────────
 
-    def pull_embeddings(self, target_camera_id: str = None) -> bool:
+    def pull_embeddings(self, target_camera_id: str = None, db_camera_id: int = None) -> bool:
         """
-        Kéo toàn bộ embedding vectors từ Server về RAM.
-        Nếu truyền target_camera_id, sẽ lưu vào cache riêng của camera đó.
+        Kéo embedding vectors từ Server về RAM.
+        - target_camera_id: display ID ("CAM_01") - dùng để lưu vào cache
+        - db_camera_id: numeric DB ID (1) - dùng để query filter theo floor trên Server
         """
         cam_id = target_camera_id or self.camera_id
+        # Ưu tiên dùng numeric ID để filter floor; fallback sang display ID
+        server_query_id = str(db_camera_id) if db_camera_id else cam_id
         
         # 1. Thử load từ đĩa (Offline-first) nếu trong RAM chưa có
         with self._cache_lock:
@@ -250,7 +308,7 @@ class EdgeClient:
                 logger.info(f"⚡ Đã load Offline Cache cho {cam_id} (Version: {offline_ver})")
 
         try:
-            logger.info(f"📥 Đang đồng bộ embeddings từ Server cho camera_id={cam_id}...")
+            logger.info(f"📥 Đồng bộ embeddings Server — camera_id={server_query_id} (display={cam_id})...")
             
             # Lấy version trước
             ver_resp = self._session.get(f"{self.server_url}/api/embeddings/version", headers=self._headers(), timeout=5)
@@ -265,7 +323,7 @@ class EdgeClient:
 
             resp = self._session.get(
                 f"{self.server_url}/api/embeddings",
-                params={"camera_id": cam_id},
+                params={"camera_id": server_query_id},
                 headers=self._headers(),
                 timeout=30,
             )
@@ -358,6 +416,7 @@ class EdgeClient:
         camera_id: str = None,
         liveness_score: float = 1.0,
         liveness_checked: bool = False,
+        timestamp: str = None,
     ) -> dict:
         """
         Gửi thẳng HTTP POST, KHÔNG LƯU SQLITE TẠI ĐÂY NỮA
@@ -365,7 +424,7 @@ class EdgeClient:
         """
         payload = {
             "camera_id": camera_id or self.camera_id,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": timestamp or datetime.now().isoformat(),
             "embedding": embedding.tolist(),
             "liveness_score": liveness_score,
             "liveness_checked": liveness_checked,
@@ -429,6 +488,11 @@ class EdgeClient:
             key = f"{student_id}_{camera_id}"
             self._cooldown_map[key] = time.time()
 
+    def reset_cooldown(self):
+        """Xóa toàn bộ lịch sử cooldown khi bắt đầu phiên mới."""
+        with self._cooldown_lock:
+            self._cooldown_map.clear()
+
     # ─── Background Sync ─────────────────────
 
     def _sync_loop(self):
@@ -439,8 +503,16 @@ class EdgeClient:
                 # 1. Sync offline records
                 if self.check_server():
                     self._push_offline_records_new()
-                    
-                    # [NEW] Thường xuyên cập nhật danh sách camera động
+
+                    # Refresh camera list từ DB mỗi 5 phút
+                    now = time.time()
+                    if not hasattr(self, '_last_cam_list_pull'):
+                        self._last_cam_list_pull = 0.0
+                    if now - self._last_cam_list_pull >= 300:
+                        if self.pull_camera_list():
+                            self._last_cam_list_pull = now
+
+                    # Thường xuyên cập nhật danh sách camera động
                     self.report_status()
 
                     # [FIX] Kiểm tra phiên bản embedding mỗi 10 giây
@@ -527,10 +599,11 @@ class EdgeClient:
                 embedding=record["embedding"],
                 camera_id=record["camera_id"],
                 liveness_score=record["liveness_score"],
-                liveness_checked=record["liveness_checked"]
+                liveness_checked=record["liveness_checked"],
+                timestamp=record["timestamp"]
             )
             
-            if result.get("status") == "success" or result.get("status") == "ignored":
+            if result.get("status") in ("success", "ignored", "queued"):
                 attendance_cache.remove_pending(record["id"])
                 success_count += 1
             else:

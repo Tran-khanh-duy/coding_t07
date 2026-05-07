@@ -45,10 +45,10 @@ class AttendanceCacheManager:
                 """)
                 conn.commit()
 
-    def save_pending(self, camera_id: str, embedding: np.ndarray, liveness_score: float, liveness_checked: bool) -> int:
+    def save_pending(self, camera_id: str, embedding: np.ndarray, liveness_score: float, liveness_checked: bool, timestamp: str = None) -> int:
         """Lưu kết quả điểm danh vào Local DB ngay lập tức (Offline-first). Trả về record_id."""
         emb_bytes = embedding.astype(np.float32).tobytes()
-        timestamp = datetime.now().isoformat()
+        ts = timestamp or datetime.now().isoformat()
         
         with self._db_lock:
             with sqlite3.connect(DB_PATH) as conn:
@@ -56,7 +56,7 @@ class AttendanceCacheManager:
                     INSERT INTO pending_attendance 
                     (camera_id, timestamp, embedding, liveness_score, liveness_checked)
                     VALUES (?, ?, ?, ?, ?)
-                """, (camera_id, timestamp, emb_bytes, liveness_score, 1 if liveness_checked else 0))
+                """, (camera_id, ts, emb_bytes, liveness_score, 1 if liveness_checked else 0))
                 conn.commit()
                 return cursor.lastrowid
 

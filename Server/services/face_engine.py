@@ -449,7 +449,7 @@ class FaceEngine:
         """Hàm nhận diện đơn lẻ (Giữ lại để tương thích ngược)"""
         return self.recognize_batch([face], cache)[0] if cache else None
 
-    def compute_enrollment_embedding(self, photos: list[np.ndarray]) -> tuple[Optional[np.ndarray], float, int]:
+    def compute_enrollment_embedding(self, photos: list[np.ndarray]) -> tuple[Optional[np.ndarray], float, int, list]:
         import traceback
         from loguru import logger
         
@@ -458,10 +458,11 @@ class FaceEngine:
             success = self.load_model()
             if not success:
                 logger.error("❌ Không thể khởi động AI Model để trích xuất khuôn mặt!")
-                return None, 0.0, 0
+                return None, 0.0, 0, []
 
         embeddings = []
         det_scores = []
+        valid_photos = []
         
         logger.info(f"👉 Bắt đầu vòng lặp duyệt {len(photos)} ảnh...")
         
@@ -522,6 +523,7 @@ class FaceEngine:
                     if face.embedding is not None:
                         embeddings.append(face.embedding.copy())
                         det_scores.append(face.det_score)
+                        valid_photos.append(photo.copy())
                         logger.info(f"✅ Ảnh {i+1}: Trích xuất embedding thành công!")
                     else:
                         logger.warning(f"⚠️ Ảnh {i+1}: Thấy mặt nhưng KHÔNG trích xuất được embedding!")
@@ -546,12 +548,12 @@ class FaceEngine:
 
         if not embeddings: 
             logger.error("❌ KẾT LUẬN: Không có embedding nào được lấy ra từ 15 ảnh!")
-            return None, 0.0, 0
+            return None, 0.0, 0, []
             
         mean_emb = np.mean(embeddings, axis=0).astype(np.float32)
         norm = np.linalg.norm(mean_emb)
         if norm > 1e-8: mean_emb = mean_emb / norm
-        return mean_emb, float(np.mean(det_scores)), len(embeddings)
+        return mean_emb, float(np.mean(det_scores)), len(embeddings), valid_photos
 
     def get_embedding(self, face_region: np.ndarray) -> "np.ndarray | None":
         if not self.is_ready: return None

@@ -1,8 +1,8 @@
 import requests
 
 # Khai báo thông tin Bot (Sẽ chuyển sang file .env ở Bước 4 để bảo mật)
-BOT_TOKEN = "8210386728:AAFCh-nmQOul9g3tIrzMcNIypNf4x6M8XdE"
-CHAT_ID = "6000467659"
+BOT_TOKEN = "8249094281:AAHgXpAkv2hd3am3g5TFSlU0H48e9jvbq9M"
+CHAT_ID = "8666460707"
 
 def send_telegram_msg(message):
     """Gửi tin nhắn qua Telegram Bot"""

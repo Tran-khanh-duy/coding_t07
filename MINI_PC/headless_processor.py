@@ -14,6 +14,7 @@ import time
 import cv2
 import numpy as np
 import threading
+from datetime import datetime
 import requests
 import base64
 import psutil
@@ -22,9 +23,11 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from config import edge_config, ai_config, anti_spoof_config, camera_config
+# pyrefly: ignore [missing-import]
 from services.face_engine import face_engine
 try:
-    from services.anti_spoof_service import anti_spoof_service
+    # pyrefly: ignore [missing-import]
+    from services.anti_spoof_service import anti_spoof_service  
     ANTI_SPOOF_AVAILABLE = anti_spoof_service.available
     if ANTI_SPOOF_AVAILABLE:
         logger.success("🚀 [Edge] Anti-Spoofing đã sẵn sàng!")
@@ -54,8 +57,9 @@ class CameraWorker:
     Thread 1 (Capture) -> Thread 2 (Detection) -> Thread 3 (Recognition) -> Thread 4 (API Sender)
     """
     
-    def __init__(self, camera_id: str, source: str):
-        self.camera_id = camera_id
+    def __init__(self, camera_id: str, source: str, db_camera_id: int = None):
+        self.camera_id = camera_id        # VD: "CAM_01" — dùng cho hiển thị/live view
+        self.db_camera_id = db_camera_id  # VD: 1 (int) — dùng để gửi lên attendance API
         self.source = source
         self._running = False
         self._stop_event = threading.Event()
@@ -95,6 +99,22 @@ class CameraWorker:
 
     def set_attendance_enabled(self, enabled: bool):
         self._attendance_enabled = enabled
+        if enabled:
+            # Xoá rác từ phiên cũ để tránh ghi nhận lệch phiên
+            self._real_face_history.clear()
+            self._spoof_log_cache.clear()
+            
+            # Reset cooldown trên edge client
+            from edge_client import edge_client
+            edge_client.reset_cooldown()
+            
+            # Xoá sạch các hàng đợi để tránh "bóng ma" từ phiên trước
+            import queue
+            for q in [self.detect_queue, self.recognize_queue, self.api_queue]:
+                try:
+                    while True: q.get_nowait()
+                except queue.Empty:
+                    pass
 
     def start(self):
         if self._running: return
@@ -113,8 +133,11 @@ class CameraWorker:
         for t in self.threads:
             t.start()
         
-        # Khởi tạo cache độc lập cho camera này
-        threading.Thread(target=lambda: edge_client.pull_embeddings(self.camera_id), daemon=True).start()
+        # Khởi tạo cache độc lập cho camera này (dùng db_camera_id để filter floor trên Server)
+        threading.Thread(
+            target=lambda: edge_client.pull_embeddings(self.camera_id, db_camera_id=self.db_camera_id),
+            daemon=True
+        ).start()
         
         logger.info(f"🚀 CameraWorker {self.camera_id} khởi động kiến trúc Multi-thread Pipeline (4 luồng).")
 
@@ -161,7 +184,8 @@ class CameraWorker:
             try:
                 if self.detect_queue.full():
                     self.detect_queue.get_nowait()
-                self.detect_queue.put_nowait(frame.copy())
+                capture_time = datetime.now().isoformat()
+                self.detect_queue.put_nowait((frame.copy(), capture_time))
             except queue.Empty:
                 pass
             except queue.Full:
@@ -173,7 +197,7 @@ class CameraWorker:
         """THREAD 2: Detect Queue -> Detections -> Recognize Queue"""
         while not self._stop_event.is_set():
             try:
-                frame = self.detect_queue.get(timeout=0.5)
+                frame, capture_time = self.detect_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
                 
@@ -188,7 +212,7 @@ class CameraWorker:
                     try:
                         if self.recognize_queue.full():
                             self.recognize_queue.get_nowait()
-                        self.recognize_queue.put_nowait((frame, detected))
+                        self.recognize_queue.put_nowait((frame, detected, capture_time))
                     except queue.Empty:
                         pass
                     except queue.Full:
@@ -202,7 +226,7 @@ class CameraWorker:
         """THREAD 3: Recognize Queue -> Recognition -> API Queue"""
         while not self._stop_event.is_set():
             try:
-                frame, detected = self.recognize_queue.get(timeout=0.5)
+                frame, detected, capture_time = self.recognize_queue.get(timeout=0.5)
             except queue.Empty:
                 continue
 
@@ -215,10 +239,19 @@ class CameraWorker:
                     # Xử lý Anti-spoofing trực tiếp trong Thread 3 (GPU bound)
                     is_real = True
                     spoof_score = 1.0
-                    if self._attendance_enabled and ANTI_SPOOF_AVAILABLE and anti_spoof_service:
-                        is_real, spoof_score = anti_spoof_service.is_real(frame, res.bbox)
-                        res.is_real = is_real
-                        res.spoof_score = spoof_score
+                    
+                    if res.recognized:
+                        # Fast-Path Cooldown: Chỉ quét chống giả mạo nếu học sinh KHÔNG bị Cooldown (chưa điểm danh)
+                        remaining = edge_client.check_cooldown(res.student_id, self.camera_id)
+                        if remaining <= 0:
+                            if self._attendance_enabled and ANTI_SPOOF_AVAILABLE and anti_spoof_service:
+                                is_real, spoof_score = anti_spoof_service.is_real(frame, res.bbox)
+                                res.is_real = is_real
+                                res.spoof_score = spoof_score
+                        else:
+                            # Đã điểm danh xong -> bỏ qua Anti-Spoofing nặng nề
+                            res.is_real = True
+                            res.spoof_score = 1.0
                     
                     color_val = "unknown"
                     if res.recognized:
@@ -234,7 +267,8 @@ class CameraWorker:
                         payload = {
                             "result": res,
                             "embedding": detected[i].embedding,
-                            "camera_id": self.camera_id
+                            "camera_id": self.camera_id,
+                            "timestamp": capture_time
                         }
                         try:
                             self.api_queue.put_nowait(payload)
@@ -257,13 +291,14 @@ class CameraWorker:
             res = payload["result"]
             embedding = payload["embedding"]
             cam_id = payload["camera_id"]
+            capture_time = payload["timestamp"]
 
             try:
                 if self._attendance_enabled and res.is_real:
                     current_count = self._real_face_history.get(res.student_id, 0)
                     self._real_face_history[res.student_id] = current_count + 1
                     
-                    if self._real_face_history[res.student_id] >= 3:
+                    if self._real_face_history[res.student_id] >= getattr(edge_config, "accumulation_frames", 3):
                         remaining = edge_client.check_cooldown(res.student_id, cam_id)
                         if remaining <= 0:
                             # 1. BƯỚC OFFLINE-FIRST: LƯU VÀO SQLITE NGAY LẬP TỨC
@@ -271,19 +306,22 @@ class CameraWorker:
                                 camera_id=cam_id,
                                 embedding=embedding,
                                 liveness_score=res.spoof_score,
-                                liveness_checked=ANTI_SPOOF_AVAILABLE
+                                liveness_checked=ANTI_SPOOF_AVAILABLE,
+                                timestamp=capture_time
                             )
                             
-                            # 2. TIẾN HÀNH GỬI API
+                            # 2. TIẾN HÀNH GỬI API (dùng db_camera_id số nguyên nếu có)
+                            api_cam_id = self.db_camera_id if self.db_camera_id else cam_id
                             result = edge_client.send_attendance_raw(
                                 embedding=embedding,
-                                camera_id=cam_id,
+                                camera_id=str(api_cam_id),
                                 liveness_score=res.spoof_score,
                                 liveness_checked=ANTI_SPOOF_AVAILABLE,
+                                timestamp=capture_time
                             )
                             
-                            if result.get("status") == "success" or result.get("status") == "ignored":
-                                # 3. NẾU THÀNH CÔNG, XÓA KHỎI PENDING
+                            if result.get("status") in ("success", "ignored", "queued"):
+                                # 3. NẾU THÀNH CÔNG HOẶC ĐANG CHỜ XỬ LÝ, XÓA KHỎI PENDING
                                 attendance_cache.remove_pending(record_id)
                             else:
                                 attendance_cache.mark_failed(record_id, result.get("message", "API Error"))
@@ -294,7 +332,8 @@ class CameraWorker:
                     self._log_spoof(res)
                     self._real_face_history[res.student_id] = 0
             except Exception as e:
-                logger.error(f"❌ API Loop Error [{self.camera_id}]: {e}")
+                logger.error(f"❌ Upload frame failed [{self.camera_id}]: {e}")
+
             finally:
                 self.api_queue.task_done()
 
@@ -403,7 +442,7 @@ class CameraWorker:
                 
                 url = f"{edge_client.server_url}/api/system/frame"
                 payload = {"image_b64": img_b64, "camera_id": cam_id, "detections": dets or []}
-                headers = {"X-API-Key": edge_client._headers()["X-API-Key"]}
+                headers = {"X-DEVICE-TOKEN": edge_client._headers()["X-DEVICE-TOKEN"]}
                 requests.post(url, json=payload, headers=headers, timeout=5)
             except: pass
         
@@ -436,17 +475,27 @@ class HeadlessProcessor:
 
         cam_list = getattr(edge_config, "camera_list", [])
         if not cam_list:
-            logger.warning("⚠️ Không tìm thấy 'camera_list' trong cấu hình, dùng chế độ Single Cam fallback.")
-            cam_list = [{"id": edge_config.camera_id, "name": "Default Cam", "source": edge_config.camera_source}]
+            logger.warning("⚠️ camera_list rỗng, thử pull lại từ Server...")
+            from edge_client import edge_client as _ec
+            _ec.pull_camera_list()
+            cam_list = getattr(edge_config, "camera_list", [])
+        if not cam_list:
+            logger.error("❌ Không có camera nào. Kiểm tra: (1) Server đang chạy, (2) Bảng Cameras có dữ liệu trong DB.")
+            return
 
-        # TẮT TỰ ĐỘNG CHẠY: Ép cứng trạng thái ban đầu là False (Chờ lệnh)
-        is_auto = False 
-        logger.info("⏸️ Mini PC đã sẵn sàng và đang CHỜ LỆNH. Hãy bấm nút Bắt đầu trên Server...")
+        # Doc tu config: neu EDGE_AUTO_START=true, camera tu dong bat ngay khi khoi dong
+        is_auto = getattr(edge_config, 'auto_start', False)
+        if is_auto:
+            logger.info("🟢 Auto-start = True: Camera se bat ngay khi khoi dong.")
+        else:
+            logger.info("⏸️ Mini PC da san sang va dang CHO LENH. Hay bam Bat dau tren Server...")
+
         
         for cam in cam_list:
-            cid = cam["id"]
-            src = cam["source"]
-            worker = CameraWorker(cid, src)
+            cid = cam["id"]             # "CAM_01"
+            src = cam["source"]         # rtsp://...
+            db_id = cam.get("camera_id")  # 1 (int từ DB)
+            worker = CameraWorker(cid, src, db_camera_id=db_id)
             worker.set_active(is_auto)
             worker.set_attendance_enabled(is_auto)
             self._workers[cid] = worker
@@ -487,7 +536,11 @@ class HeadlessProcessor:
                             
                             if target_key:
                                 old_worker = self._workers[target_key]
-                                new_worker = CameraWorker(camera_id=target_key, source=old_worker.source)
+                                new_worker = CameraWorker(
+                                    camera_id=target_key,
+                                    source=old_worker.source,
+                                    db_camera_id=old_worker.db_camera_id
+                                )
                                 new_worker.set_active(True)
                                 new_worker.set_attendance_enabled(True)
                                 new_worker.set_previewing(True)
@@ -505,9 +558,11 @@ class HeadlessProcessor:
                             if is_start:
                                 logger.info("🟢 NHẬN LỆNH [START]: Đánh thức Camera, bắt đầu điểm danh!")
                                 face_engine.load_model()
+                                edge_client.reset_cooldown()
                             else:
                                 logger.info("🔴 NHẬN LỆNH [STOP]: Tạm dừng điểm danh, giải phóng Camera.")
-                                face_engine.unload_model()
+                                # giúp điểm danh khởi động lại ngay lập tức (không bị delay load vài giây).
+                                # face_engine.unload_model()
 
                             # Đẩy lệnh xuống điều khiển tất cả các luồng camera
                             for worker in self._workers.values():
@@ -517,10 +572,10 @@ class HeadlessProcessor:
                     # Cập nhật xem Server có đang muốn xem trước (Preview) camera nào không
                     self._target_camera_view = actual_target
                     
-                    # [NEW] Khởi tạo Worker cho TẤT CẢ các camera thuộc Server
+                    # [NEW] Khởi tạo Worker cho các camera mới từ DB (dựa trên all_cameras trả về)
                     all_cams = cmd_data.get("all_cameras", [])
                     
-                    # Đảm bảo target_camera cũng được khởi tạo (fallback nếu server ko gửi all_cameras)
+                    # Fallback: đảm bảo target_camera cũng được khởi tạo
                     if actual_target and isinstance(actual_target, str):
                         if actual_target not in all_cams:
                             all_cams.append(actual_target)
@@ -529,12 +584,20 @@ class HeadlessProcessor:
                         if isinstance(cam_url, str):
                             source_exists = any(w.source == cam_url for w in self._workers.values())
                             if cam_url not in self._workers and not source_exists:
-                                logger.info(f"✨ Khởi tạo on-the-fly Worker cho Camera: {cam_url}")
-                                new_worker = CameraWorker(camera_id=cam_url, source=cam_url)
+                                # Tìm camera_id tương ứng trong DB list
+                                cam_info = next(
+                                    (c for c in edge_config.camera_list if c.get("source") == cam_url),
+                                    None
+                                )
+                                cam_id = cam_info["id"] if cam_info else cam_url
+                                cam_name = cam_info["name"] if cam_info else cam_url
+                                db_id = cam_info.get("camera_id") if cam_info else None
+                                logger.info(f"✨ Khởi tạo on-the-fly Worker: [{cam_id}] {cam_name}")
+                                new_worker = CameraWorker(camera_id=cam_id, source=cam_url, db_camera_id=db_id)
                                 is_sys_start = (self._current_command == "START")
                                 new_worker.set_active(is_sys_start) 
                                 new_worker.set_attendance_enabled(is_sys_start) 
-                                self._workers[cam_url] = new_worker
+                                self._workers[cam_id] = new_worker
                                 new_worker.start()
 
                     for cid, worker in self._workers.items():

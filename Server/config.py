@@ -82,9 +82,9 @@ class AIConfig:
 
     recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.65")) 
     
-    # Lấy 5 đến 10 ảnh chất lượng cao để tính Embedding trung bình
-    min_enroll_photos:  int = 5
-    max_enroll_photos:  int = 10
+    # Lấy 12 đến 15 ảnh chất lượng cao để tính Embedding trung bình
+    min_enroll_photos:  int = 12
+    max_enroll_photos:  int = 15
     embedding_size:   int   = 512
     attendance_cooldown_sec: int = int(os.getenv("ATTENDANCE_COOLDOWN", "60"))
     
@@ -113,14 +113,10 @@ class CameraConfig:
         return str(self.source).startswith("rtsp://") or \
                str(self.source).startswith("http://")
 
-# Danh sách Camera (dùng cho điểm danh - nếu Server kiêm luôn điểm danh)
-CAMERAS: list[dict] = [
-    {"id": 1, "name": "Camera 1", "source": "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 2, "name": "Camera 2", "source": "rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 3, "name": "Camera 3", "source": "rtsp://admin:a1234567@192.168.1.19:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 4, "name": "Camera 4", "source": "rtsp://admin:a1234567@192.168.1.20:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-    {"id": 5, "name": "Camera 5", "source": "rtsp://admin:a1234567@192.168.1.21:554/cam/realmonitor?channel=1&subtype=0", "floor": 1, "active": True},
-]
+# Danh sách Camera — ĐÃ XOÁ HARDCODE
+# Giờ được lưu trong bảng `Cameras` của MySQL và
+# được lấy qua camera_repo.get_all() / get_for_edge()
+# Xem: database/repositories.py → CameraRepository
 
 # ─────────────────────────────────────────────
 #  BÁO CÁO & ỨNG DỤNG
@@ -206,21 +202,22 @@ FLOOR_CLASS_MAPPING: dict = {
 class EdgeConfig:
     server_url:           str  = os.getenv("EDGE_SERVER_URL", "http://127.0.0.1:9696")
     api_key:              str  = os.getenv("EDGE_API_KEY", "faceattend_secret_2026")
-    camera_id:            str  = os.getenv("EDGE_CAMERA_ID", "CAM_01")
-    camera_source:        str  = os.getenv("EDGE_CAMERA_SOURCE", "0") 
     device_name:          str  = os.getenv("EDGE_DEVICE_NAME", "Edge Box 01")
+    # Lọc theo nhóm thiết bị (ví dụ: 'KTX E4'). Rỗng = lấy tất cả.
+    device_group:         str  = os.getenv("EDGE_DEVICE_GROUP", "")
+
     sync_interval_sec:    int  = int(os.getenv("EDGE_SYNC_INTERVAL", "30"))
-    embedding_refresh_min: int = int(os.getenv("EDGE_EMBED_REFRESH", "10")) 
+    embedding_refresh_min: int = int(os.getenv("EDGE_EMBED_REFRESH", "10"))
     attendance_cooldown:  int  = int(os.getenv("EDGE_COOLDOWN", "60"))
     process_every_n:      int  = int(os.getenv("EDGE_PROCESS_N", "1"))
     fullscreen:           bool = os.getenv("EDGE_FULLSCREEN", "true").lower() == "true"
     show_fps:             bool = os.getenv("EDGE_SHOW_FPS", "true").lower() == "true"
     auto_start:           bool = os.getenv("EDGE_AUTO_START", "true").lower() == "true"
 
-    camera_list: list = field(default_factory=lambda: [
-        {"id": "CAM_01", "name": "Camera 1", "source": "rtsp://admin:a1234567@192.168.1.17:554/cam/realmonitor?channel=1&subtype=0"},
-        {"id": "CAM_02", "name": "Camera 2", "source": "rtsp://admin:a1234567@192.168.1.23:554/cam/realmonitor?channel=1&subtype=0"},
-    ])
+    # camera_list ĐÃ XOÁ HARDCODE.
+    # Mini PC sẽ gọi GET /api/system/cameras/edge-list khi khởi động
+    # và lưu vào thuộc tính này thông qua EdgeClient.pull_camera_list().
+    camera_list: list = field(default_factory=list)
 
 db_config         = DatabaseConfig()
 ai_config         = AIConfig()
