@@ -68,7 +68,7 @@ class NavButton(QPushButton):
                 }}
             """)
             self._accent_bar.setStyleSheet(f"border-radius: 1.5px; background: {Colors.CYAN};")
-            self._text_lbl.setStyleSheet(f"font-weight: 600; color: {Colors.TEXT};")
+            self._text_lbl.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {Colors.TEXT}; background: transparent;")
             self._icon_lbl.setStyleSheet(f"color: {Colors.CYAN}; font-size: 16px;")
         else:
             self.setStyleSheet(f"""
@@ -83,7 +83,7 @@ class NavButton(QPushButton):
                 }}
             """)
             self._accent_bar.setStyleSheet("background: transparent;")
-            self._text_lbl.setStyleSheet(f"font-weight: 400; color: {Colors.TEXT_DIM};")
+            self._text_lbl.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {Colors.TEXT_DIM}; background: transparent;")
             self._icon_lbl.setStyleSheet(f"color: {Colors.TEXT_DARK}; font-size: 16px;")
 
 
@@ -121,10 +121,10 @@ class Sidebar(QWidget):
         h_lay.setSpacing(12)
 
         logo_box = QFrame()
-        logo_box.setFixedSize(36, 36)
-        logo_box.setStyleSheet(f"""
-            background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {Colors.CYAN}, stop:1 {Colors.CYAN_DIM});
-            border-radius: 8px;
+        logo_box.setFixedSize(48, 48) # Tăng từ 36 lên 48
+        logo_box.setStyleSheet("""
+            background-color: transparent;
+            border: none;
         """)
         lb_lay = QHBoxLayout(logo_box)
         lb_lay.setContentsMargins(0, 0, 0, 0)
@@ -138,44 +138,46 @@ class Sidebar(QWidget):
         
         pixmap = QPixmap(icon_path)
         if not pixmap.isNull():
-            logo_lbl.setPixmap(pixmap.scaled(24, 24, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            # Tăng từ 24 lên 48 để logo to rõ và đẹp hơn
+            logo_lbl.setPixmap(pixmap.scaled(48, 48, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
         else:
             logo_lbl.setText("👁")
-            logo_lbl.setStyleSheet("font-size: 18px; color: white; background: transparent;")
+            logo_lbl.setStyleSheet("font-size: 32px; color: #1E293B; background: transparent;")
             
         lb_lay.addWidget(logo_lbl)
 
         title_box = QVBoxLayout()
-        title_box.setSpacing(0)
+        title_box.setSpacing(2) # Tạo khoảng hở nhỏ giữa tên App và version
+        title_box.setAlignment(Qt.AlignmentFlag.AlignVCenter) # Căn giữa text block với logo theo chiều dọc
+        
         app_name = QLabel("FaceAttend")
-        app_name.setStyleSheet(f"font-size: 15px; font-weight: 800; color: {Colors.TEXT};")
+        app_name.setStyleSheet(f"font-size: 16px; font-weight: 900; color: {Colors.TEXT};")
         version_lbl = QLabel("v1.0.0")
-        version_lbl.setStyleSheet(f"font-size: 10px; color: {Colors.TEXT_DARK};")
+        version_lbl.setStyleSheet(f"font-size: 11px; font-weight: 500; color: {Colors.TEXT_DARK};")
         title_box.addWidget(app_name)
         title_box.addWidget(version_lbl)
 
         h_lay.addWidget(logo_box)
         h_lay.addLayout(title_box)
+        h_lay.setAlignment(Qt.AlignmentFlag.AlignVCenter) # Đảm bảo Logo và Text đều được Căn giữa dọc
         h_lay.addStretch()
         layout.addWidget(header)
 
-        # ── Section label ──
-        menu_label = QLabel("ĐIỀU HƯỚNG")
-        menu_label.setStyleSheet(f"""
-            color: {Colors.TEXT_DARK}; font-size: 10px; font-weight: 700;
-            letter-spacing: 1.5px; padding: 20px 24px 8px 24px;
-        """)
-        layout.addWidget(menu_label)
+        # ── Section label (Đã comment out theo yêu cầu) ──
+        # menu_label = QLabel("ĐIỀU HƯỚNG")
+        # menu_label.setStyleSheet(f"color: {Colors.TEXT_DARK}; padding: 20px 24px 8px 24px;")
+        # layout.addWidget(menu_label)
+        layout.addSpacing(16) # Thêm khoảng trống nhỏ thay thế
 
         # ── Nav items ──
         self._nav_buttons: list[NavButton] = []
         nav_items = [
-            ("🏠", "Tổng quan",      self.PAGE_DASHBOARD),
-            ("📸", "Điểm danh live",  self.PAGE_ATTENDANCE),
-            ("👤", "Đăng ký mới",    self.PAGE_ENROLL),
-            ("📚", "Danh sách HV",    self.PAGE_STUDENTS),
-            ("📊", "Báo cáo Excel",   self.PAGE_REPORTS),
-            ("🎥", "Quản lý Camera",  self.PAGE_CAMERAS),
+            ("🏠", "DASHBOARD",       self.PAGE_DASHBOARD),
+            ("📸", "ĐIỂM DANH",       self.PAGE_ATTENDANCE),
+            ("👤", "ĐĂNG KÝ MỚI",     self.PAGE_ENROLL),
+            ("📚", "DANH SÁCH HV",    self.PAGE_STUDENTS),
+            ("📊", "XUẤT BÁO CÁO",    self.PAGE_REPORTS),
+            ("🎥", "QUẢN LÝ CAMERA",  self.PAGE_CAMERAS),
         ]
         
         for icon, label, page_id in nav_items:
@@ -198,11 +200,13 @@ class Sidebar(QWidget):
         self._nav_buttons.append(settings_btn)
         layout.addWidget(settings_btn)
 
+        layout.addSpacing(10) # Tạo khoảng cách giữa nút Cấu hình và Trạng thái máy chủ
+
         # ── DB Status Chip ──
         self._status_frame = QFrame()
-        self._status_frame.setFixedHeight(48)
+        # Bỏ setFixedHeight(48) để không bị ép không gian chật hẹp
         sf_lay = QHBoxLayout(self._status_frame)
-        sf_lay.setContentsMargins(24, 0, 24, 8)
+        sf_lay.setContentsMargins(24, 8, 24, 16) # Thêm lề dọc để status frame có khoảng thở tự nhiên
         
         self._db_dot = QLabel("●")
         self._db_text = QLabel("Máy chủ: Ngoại tuyến")

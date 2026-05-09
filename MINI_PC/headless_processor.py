@@ -241,16 +241,24 @@ class CameraWorker:
                     spoof_score = 1.0
                     
                     if res.recognized:
-                        # Fast-Path Cooldown: Chỉ quét chống giả mạo nếu học sinh KHÔNG bị Cooldown (chưa điểm danh)
+                        # Fast-Path Cooldown: Chi quet chong gia mao neu hoc sinh CHUA diem danh
                         remaining = edge_client.check_cooldown(res.student_id, self.camera_id)
                         if remaining <= 0:
                             if self._attendance_enabled and ANTI_SPOOF_AVAILABLE and anti_spoof_service:
+                                # Anti-Spoof kha dung: ket qua thuc te
                                 is_real, spoof_score = anti_spoof_service.is_real(frame, res.bbox)
-                                res.is_real = is_real
+                                res.is_real    = is_real
                                 res.spoof_score = spoof_score
+                            else:
+                                # Anti-Spoof KHONG kha dung: mac dinh cho phep qua
+                                # ROOT CAUSE FIX: neu khong set is_real=True o day,
+                                # res.is_real van la None -> _api_loop check 'res.is_real'
+                                # se False -> diem danh bi block hoan toan!
+                                res.is_real    = True
+                                res.spoof_score = 1.0
                         else:
-                            # Đã điểm danh xong -> bỏ qua Anti-Spoofing nặng nề
-                            res.is_real = True
+                            # Da diem danh xong -> bo qua Anti-Spoofing nang ne
+                            res.is_real    = True
                             res.spoof_score = 1.0
                     
                     color_val = "unknown"
@@ -297,11 +305,18 @@ class CameraWorker:
                 if self._attendance_enabled and res.is_real:
                     current_count = self._real_face_history.get(res.student_id, 0)
                     self._real_face_history[res.student_id] = current_count + 1
-                    
-                    if self._real_face_history[res.student_id] >= getattr(edge_config, "accumulation_frames", 3):
+
+                    needed = getattr(edge_config, "accumulation_frames", 3)
+                    accumulated = self._real_face_history[res.student_id]
+                    logger.debug(
+                        f"[API-LOOP] [{self.camera_id}] '{res.display_name}' "
+                        f"tich luy {accumulated}/{needed} frame(s)"
+                    )
+
+                    if accumulated >= needed:
                         remaining = edge_client.check_cooldown(res.student_id, cam_id)
                         if remaining <= 0:
-                            # 1. BƯỚC OFFLINE-FIRST: LƯU VÀO SQLITE NGAY LẬP TỨC
+                            # 1. OFFLINE-FIRST: Luu vao SQLite ngay lap tuc
                             record_id = attendance_cache.save_pending(
                                 camera_id=cam_id,
                                 embedding=embedding,
@@ -309,9 +324,15 @@ class CameraWorker:
                                 liveness_checked=ANTI_SPOOF_AVAILABLE,
                                 timestamp=capture_time
                             )
-                            
-                            # 2. TIẾN HÀNH GỬI API (dùng db_camera_id số nguyên nếu có)
+
+                            # 2. Gui len Server API
                             api_cam_id = self.db_camera_id if self.db_camera_id else cam_id
+                            logger.info(
+                                f"[API-LOOP] [{self.camera_id}] Gui diem danh: "
+                                f"'{res.display_name}' | cam_api={api_cam_id} "
+                                f"| spoof={res.spoof_score:.2f} "
+                                f"| anti_spoof_active={ANTI_SPOOF_AVAILABLE}"
+                            )
                             result = edge_client.send_attendance_raw(
                                 embedding=embedding,
                                 camera_id=str(api_cam_id),
@@ -319,20 +340,41 @@ class CameraWorker:
                                 liveness_checked=ANTI_SPOOF_AVAILABLE,
                                 timestamp=capture_time
                             )
-                            
-                            if result.get("status") in ("success", "ignored", "queued"):
-                                # 3. NẾU THÀNH CÔNG HOẶC ĐANG CHỜ XỬ LÝ, XÓA KHỎI PENDING
+
+                            status = result.get("status", "unknown")
+                            if status in ("success", "ignored", "queued"):
                                 attendance_cache.remove_pending(record_id)
+                                logger.success(
+                                    f"[API-LOOP] [{self.camera_id}] Server chap nhan: "
+                                    f"'{res.display_name}' | status='{status}'"
+                                )
                             else:
                                 attendance_cache.mark_failed(record_id, result.get("message", "API Error"))
-                                
+                                logger.error(
+                                    f"[API-LOOP] [{self.camera_id}] Server TU CHOI: "
+                                    f"'{res.display_name}' | status='{status}' "
+                                    f"| message='{result.get('message', '')}'"
+                                )
+
                             edge_client.set_cooldown(res.student_id, cam_id)
                             self._real_face_history[res.student_id] = 0
+                        else:
+                            logger.debug(
+                                f"[API-LOOP] [{self.camera_id}] '{res.display_name}' "
+                                f"dang trong COOLDOWN con {remaining:.0f}s"
+                            )
                 elif self._attendance_enabled and not res.is_real:
                     self._log_spoof(res)
                     self._real_face_history[res.student_id] = 0
-            except Exception as e:
-                logger.error(f"❌ Upload frame failed [{self.camera_id}]: {e}")
+                elif self._attendance_enabled and res.is_real is None:
+                    # Guard: is_real chua duoc set (bug) - log de phat hien
+                    logger.warning(
+                        f"[API-LOOP] [{self.camera_id}] BUG: res.is_real=None cho "
+                        f"'{res.display_name}' — diem danh bi bo qua! "
+                        f"Kiem tra _recognize_loop anti-spoof path."
+                    )
+            except Exception as api_err:
+                logger.exception(f"[API-LOOP] [{self.camera_id}] CRITICAL exception: {api_err}")
 
             finally:
                 self.api_queue.task_done()

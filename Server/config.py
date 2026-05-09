@@ -80,16 +80,28 @@ class AIConfig:
     # Kích thước lưới quét: 480x480 là cân bằng hoàn hảo giữa tốc độ và chất lượng cho Đăng ký
     det_size:         tuple = (480, 480) 
 
-    recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.65")) 
-    
+    # ── Threshold & Margin ────────────────────────────────────────────────────
+    # Ngưỡng nhận diện: 0.50 là "điểm vàng" thực chiến cho buffalo_l/s + cosine similarity.
+    # Tăng lên 0.55 nếu vẫn còn False Positive; hạ về 0.45 nếu bỏ sót quá nhiều.
+    # KHÔNG dùng 0.65+ vì cosine similarity sau L2-normalize thường nằm trong [0.3, 0.7].
+    recognition_threshold: float = float(os.getenv("AI_THRESHOLD", "0.50"))
+
+    # Margin kiểm tra chéo (Task 2): Nếu best_score - second_best_score < margin
+    # → hệ thống "đang bối rối" → từ chối nhận diện (gán Unknown).
+    # Giá trị 0.08 (~8%) là ngưỡng phân biệt đủ tin cậy trong thực tế camera IP.
+    recognition_margin:    float = float(os.getenv("AI_MARGIN",    "0.08"))
+
+    # ── Enrollment ────────────────────────────────────────────────────────────
     # Lấy 12 đến 15 ảnh chất lượng cao để tính Embedding trung bình
-    min_enroll_photos:  int = 12
-    max_enroll_photos:  int = 15
-    embedding_size:   int   = 512
-    attendance_cooldown_sec: int = int(os.getenv("ATTENDANCE_COOLDOWN", "60"))
-    
+    min_enroll_photos:       int   = 12
+    max_enroll_photos:       int   = 15
+    embedding_size:          int   = 512
+    attendance_cooldown_sec: int   = int(os.getenv("ATTENDANCE_COOLDOWN", "60"))
+
     # Yêu cầu mặt rõ nét khi đăng ký (0.75 trở lên)
     min_face_det_score: float = float(os.getenv("MIN_FACE_SCORE", "0.75"))
+
+
 
 
 # ─────────────────────────────────────────────

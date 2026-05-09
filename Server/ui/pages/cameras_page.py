@@ -117,7 +117,7 @@ class CamerasPage(QWidget):
         
         self._btn_delete = QPushButton("🗑️  Xóa Camera")
         self._btn_delete.setFixedHeight(40)
-        self._btn_delete.setStyleSheet(f"background: {Colors.RED_LT}; color: {Colors.RED}; border-radius: 8px; font-weight: 600;")
+        self._btn_delete.setStyleSheet(f"background: {Colors.RED}; color: white; border-radius: 8px; font-weight: bold;")
         self._btn_delete.clicked.connect(self._delete_camera)
         
         self._btn_retry = QPushButton("🔌 Thử kết nối lại (Retry)")

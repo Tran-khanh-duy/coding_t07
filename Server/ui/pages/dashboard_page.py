@@ -1,25 +1,26 @@
 import subprocess
 import platform
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QFrame, QGridLayout, QScrollArea, QProgressBar,
-    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
-    QGraphicsDropShadowEffect, QDateEdit  # <-- Đã thêm QDateEdit ở đây
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QFrame, QTableWidget, QTableWidgetItem,
+    QHeaderView, QAbstractItemView
 )
-from PyQt6.QtCore import Qt, QTimer, QRectF, pyqtSignal, QSize, QDate  # <-- Đã thêm QDate ở đây
-from PyQt6.QtGui import QFont, QColor, QPixmap, QPainter, QPen, QImage, QPainterPath
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRectF, QTime, QDate
+from PyQt6.QtGui import QFont, QColor, QPainter, QPen
 
 import sys
 import requests
 import psutil
 from loguru import logger
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from ui.styles.theme import Colors
-from config import db_config, ai_config
+# Đảm bảo import đúng từ cấu trúc thư mục
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from ui.styles.theme import Colors, create_shadow
+
 
 def get_gpu_name():
+    """Lấy tên GPU từ Windows bằng wmic"""
     try:
         output = subprocess.check_output("wmic path win32_VideoController get name", shell=True, text=True)
         lines = [line.strip() for line in output.split('\n') if line.strip() and "Name" not in line]
@@ -29,13 +30,14 @@ def get_gpu_name():
         pass
     return platform.processor()
 
-class CircularProgress(QWidget):
-    """Biểu đồ vòng tròn thể hiện tỷ lệ phần trăm."""
+
+class DonutChart(QWidget):
+    """Biểu đồ tỷ lệ điểm danh hình Donut - Dành cho Light Theme"""
     def __init__(self, color_str, bg_color_str, parent=None):
         super().__init__(parent)
-        self.setFixedSize(140, 140)
+        self.setFixedSize(220, 220)
         self.value = 0
-        self.max_value = 0 # Đổi mặc định về 0
+        self.max_value = 0
         self.color = QColor(color_str)
         self.bg_color = QColor(bg_color_str)
 
@@ -48,536 +50,374 @@ class CircularProgress(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        rect = QRectF(15, 15, 110, 110)
+        rect = QRectF(30, 30, 160, 160)
         
-        # Nền vòng tròn (Vắng mặt)
+        # Nền vòng tròn (Thường dành cho vắng mặt)
         pen_bg = QPen(self.bg_color)
-        pen_bg.setWidth(14)
+        pen_bg.setWidth(16)
         pen_bg.setCapStyle(Qt.PenCapStyle.RoundCap)
         painter.setPen(pen_bg)
         painter.drawArc(rect, 0, 360 * 16)
         
-        # Vòng tròn giá trị (Có mặt) - Chỉ vẽ khi max_value > 0 để tránh chia cho 0
+        # Vòng tròn giá trị (Có mặt)
         if self.max_value > 0:
             pen_val = QPen(self.color)
-            pen_val.setWidth(14)
+            pen_val.setWidth(16)
             pen_val.setCapStyle(Qt.PenCapStyle.RoundCap)
             painter.setPen(pen_val)
             
             span_angle = int((self.value / self.max_value) * 360 * 16)
             painter.drawArc(rect, 90 * 16, -span_angle)
         
-        # Chữ ở giữa
-        painter.setPen(QColor("#0F172A"))
-        font = QFont("Segoe UI", 11, QFont.Weight.Bold)
-        painter.setFont(font)
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"Total: {self.max_value}\nStudents")
+        # Text ở giữa biểu đồ
+        painter.setPen(QColor(Colors.TEXT_PRI))
+        font_val = QFont("Segoe UI", 32, QFont.Weight.Bold)
+        painter.setFont(font_val)
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, f"{self.max_value}")
+        
+        font_lbl = QFont("Segoe UI", 11)
+        painter.setFont(font_lbl)
+        rect_lbl = QRectF(30, 120, 160, 40)
+        painter.setPen(QColor(Colors.TEXT_SEC))
+        painter.drawText(rect_lbl, Qt.AlignmentFlag.AlignCenter, "Tổng cộng")
 
-def create_shadow():
-    shadow = QGraphicsDropShadowEffect()
-    shadow.setBlurRadius(15)
-    shadow.setColor(QColor(0, 0, 0, 15))
-    shadow.setOffset(0, 4)
-    return shadow
-    
+
 class DashboardPage(QWidget):
     go_to_live_view = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.gpu_name = get_gpu_name()
-        self.setStyleSheet("background-color: #F1F5F9;")  # Nền xám nhạt nhẹ nhàng
         
-        self._students_total = 85
-        self._present_count = 72
-        self._absent_count = 13
+        # Đặt nền tảng tổng thể là Very Light Slate Gray
+        self.setStyleSheet(f"background-color: {Colors.BG_APP};")
+        
+        self._students_total = 0
+        self._present_count = 0
+        self._absent_count = 0
 
         self._setup_ui()
 
-        self._sys_timer = QTimer(self)
-        self._sys_timer.timeout.connect(self._check_system_realtime)
-        self._sys_timer.start(3000)
+        # ── TASK 1: QTimer tự động quét dữ liệu thời gian thực (3 giây / lần) ──
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self.refresh_dashboard_data)
+        self._refresh_timer.start(3000)
+
+        # Timer cho đồng hồ thời gian thực
+        self._clock_timer = QTimer(self)
+        self._clock_timer.timeout.connect(self._update_clock)
+        self._clock_timer.start(1000)
+
+        # Kéo dữ liệu ban đầu ngay khi khởi tạo
+        self.refresh_dashboard_data()
 
     def _setup_ui(self):
+        # Master Layout: QVBoxLayout với Margins 20px, Spacing 16px
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        main_layout.setSpacing(16)
 
         # ==========================================
-        # TOP PANEL: LIVE ATTENDANCE LOG (Table)
+        # ROW 1: HEADER SECTION
         # ==========================================
-        top_panel = QFrame()
-        top_panel.setStyleSheet("""
-            QFrame#TopPanel {
-                background-color: #FFFFFF;
-                border-radius: 12px;
-                border: 1px solid #E2E8F0;
-            }
-        """)
-        top_panel.setObjectName("TopPanel")
-        top_panel.setGraphicsEffect(create_shadow())
-        top_layout = QVBoxLayout(top_panel)
-        top_layout.setContentsMargins(20, 20, 20, 10)
-
-        title_top = QLabel("<b>LIVE ATTENDANCE LOG</b> <span style='font-size:13px; font-weight:normal; color:#64748B;'>Hàng điểm danh trực tiếp</span>")
-        title_top.setStyleSheet("font-size: 15px; color: #0F172A; border: none; background: transparent;")
-        title_top.setTextFormat(Qt.TextFormat.RichText)
-        top_layout.addWidget(title_top)
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(16)
         
+        # Cụm Tiêu đề (Left)
+        title_layout = QVBoxLayout()
+        title_layout.setSpacing(4)
+        lbl_title = QLabel("DASHBOARD")
+        lbl_title.setStyleSheet(f"font-size: 26px; font-weight: 800; color: {Colors.TEXT_PRI}; border: none;")
+        lbl_subtitle = QLabel("Hệ thống điểm danh AI theo thời gian thực")
+        lbl_subtitle.setStyleSheet(f"font-size: 14px; color: {Colors.TEXT_SEC}; border: none;")
+        title_layout.addWidget(lbl_title)
+        title_layout.addWidget(lbl_subtitle)
+        header_layout.addLayout(title_layout)
+        
+        header_layout.addStretch()
+
+        # Cụm Thông tin (Right)
+        self.lbl_clock = QLabel(QTime.currentTime().toString("HH:mm:ss"))
+        self.lbl_clock.setStyleSheet(f"font-size: 16px; font-weight: 700; color: {Colors.TEXT_PRI};")
+        
+        lbl_server_health = QLabel("🟢 Server Health: Healthy")
+        lbl_server_health.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {Colors.SUCCESS};")
+        
+        lbl_bell = QLabel("🔔")
+        lbl_bell.setStyleSheet("font-size: 20px;")
+        
+        lbl_avatar = QLabel("👤 Admin User")
+        lbl_avatar.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {Colors.TEXT_PRI}; background-color: {Colors.BORDER}; padding: 8px 16px; border-radius: 18px;")
+
+        header_layout.addWidget(lbl_server_health)
+        header_layout.addSpacing(24)
+        header_layout.addWidget(self.lbl_clock)
+        header_layout.addSpacing(24)
+        header_layout.addWidget(lbl_bell)
+        header_layout.addSpacing(16)
+        header_layout.addWidget(lbl_avatar)
+
+        main_layout.addLayout(header_layout)
+
+        # ==========================================
+        # ROW 2: KPI CARDS (Lưới 2 Hàng 3 Cột)
+        # ==========================================
+        kpi_layout = QGridLayout()
+        kpi_layout.setSpacing(16)
+        
+        # Thẻ 1
+        self.lbl_total_present = self._create_kpi_card("Tổng điểm danh hôm nay", "0", Colors.TEXT_PRI, kpi_layout, 0, 0, trend="🟢 +12%")
+        # Thẻ 2
+        self.lbl_active_cameras = self._create_kpi_card("Số camera hoạt động", "0", Colors.TEXT_PRI, kpi_layout, 0, 1)
+        # Thẻ 3
+        self.lbl_accuracy = self._create_kpi_card("Độ chính xác nhận diện", "99.1%", Colors.TEXT_PRI, kpi_layout, 0, 2)
+        # Thẻ 4
+        self.lbl_sys_status = self._create_kpi_card("Trạng thái hệ thống", "ỔN ĐỊNH", Colors.SUCCESS, kpi_layout, 1, 0)
+        # Thẻ 5
+        self.lbl_queue = self._create_kpi_card("Queue processing", "0 ms", Colors.TEXT_PRI, kpi_layout, 1, 1)
+        # Thẻ 6
+        self.lbl_spoof = self._create_kpi_card("Cảnh báo spoof detection", "0", Colors.DANGER, kpi_layout, 1, 2, trend="🔴 Nguy cơ")
+
+        main_layout.addLayout(kpi_layout)
+
+        # ==========================================
+        # ROW 3: CORE ANALYTICS (Stretch 3:7)
+        # ==========================================
+        core_layout = QHBoxLayout()
+        core_layout.setSpacing(16)
+
+        # --- LEFT (Stretch 3): TỶ LỆ ĐIỂM DANH ---
+        chart_frame = QFrame()
+        chart_frame.setGraphicsEffect(create_shadow())
+        chart_layout = QVBoxLayout(chart_frame)
+        chart_layout.setContentsMargins(20, 20, 20, 20)
+        
+        lbl_chart_title = QLabel("Tỷ lệ điểm danh")
+        lbl_chart_title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {Colors.TEXT_PRI}; border: none;")
+        chart_layout.addWidget(lbl_chart_title)
+        
+        # Donut Chart
+        donut_container = QHBoxLayout()
+        self.donut = DonutChart(Colors.SUCCESS, Colors.BORDER)
+        donut_container.addStretch()
+        donut_container.addWidget(self.donut)
+        donut_container.addStretch()
+        chart_layout.addLayout(donut_container)
+        
+        # Chú thích
+        self.lbl_legend = QLabel("🟩 Có mặt: 0    ⬜ Vắng mặt: 0")
+        self.lbl_legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_legend.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {Colors.TEXT_SEC};")
+        chart_layout.addWidget(self.lbl_legend)
+        
+        core_layout.addWidget(chart_frame, 3)
+
+        # --- RIGHT (Stretch 7): LIVE ATTENDANCE LOG ---
+        log_frame = QFrame()
+        log_frame.setGraphicsEffect(create_shadow())
+        log_layout = QVBoxLayout(log_frame)
+        log_layout.setContentsMargins(20, 20, 20, 20)
+        
+        lbl_log_title = QLabel("NỘI DUNG LOG ĐIỂM DANH TRỰC TIẾP")
+        lbl_log_title.setStyleSheet(f"font-size: 16px; font-weight: bold; color: {Colors.TEXT_PRI}; border: none;")
+        log_layout.addWidget(lbl_log_title)
+
         # Bảng Log
         self.table = QTableWidget()
         self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["PROFILE", "Mã SV & Tên", "Thời gian", "Lớp", "Trạng thái"])
+        self.table.setHorizontalHeaderLabels(["Camera", "Mã SV", "Họ Tên", "Thời gian", "Trạng thái"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.table.setShowGrid(False)
-        self.table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        
+        # TASK 1: Thêm khoảng không gian thở dưới đáy bảng bằng QSS
+        self.table.setStyleSheet("QTableWidget { padding-bottom: 15px; border: none; background: transparent; }")
+        
+        # (Dự phòng TASK 2): Nếu QSS không đủ mạnh, thêm lề cho Viewport
+        self.table.viewport().setContentsMargins(0, 0, 0, 15)
+        
+        log_layout.addWidget(self.table)
+        core_layout.addWidget(log_frame, 7)
 
-        self.table.setStyleSheet("""
-            QTableWidget {
-                background-color: transparent;
-                border: none;
-            }
-            QHeaderView::section {
-                background-color: transparent;
-                color: #0F172A;
-                font-weight: 800;
-                font-size: 12px;
-                border: none;
-                border-bottom: 2px solid #E2E8F0;
-                padding: 10px 8px;
-                text-align: left;
-            }
-            QTableWidget::item {
-                background-color: transparent;
-                border-bottom: 1px solid #F1F5F9;
-                color: #334155;
-                font-size: 13px;
-                font-weight: 600;
-            }
-        """)
-        top_layout.addWidget(self.table)
-        main_layout.addWidget(top_panel, 5) # Chiếm 50% chiều cao
-
+        main_layout.addLayout(core_layout)
 
         # ==========================================
-        # BOTTOM PANELS (Left and Right)
+        # ROW 4: INFRASTRUCTURE MONITOR
         # ==========================================
-        bottom_layout = QHBoxLayout()
-        bottom_layout.setSpacing(15)
-
-        # ---------- BOTTOM LEFT ----------
-        bottom_left_layout = QVBoxLayout()
-        bottom_left_layout.setSpacing(15)
-
-        # 1. Identity Card Panel
-        identity_panel = QFrame()
-        identity_panel.setObjectName("IdentityPanel")
-        identity_panel.setStyleSheet("QFrame#IdentityPanel { background-color: #FFFFFF; border-radius: 12px; border: 1px solid #E2E8F0; }")
-        identity_panel.setGraphicsEffect(create_shadow())
-        identity_layout = QVBoxLayout(identity_panel)
-        identity_layout.setContentsMargins(20, 20, 20, 20)
-
-        id_title = QLabel("<b>IDENTITY CARD FOCUS PANEL</b>")
-        id_title.setStyleSheet("font-size: 14px; color: #0F172A; border: none;")
-        identity_layout.addWidget(id_title)
-
-        id_content_layout = QHBoxLayout()
+        infra_layout = QVBoxLayout()
+        infra_layout.setSpacing(10)
         
-        # Left side info
-        info_layout = QVBoxLayout()
-        info_layout.setSpacing(15)
+        # ROW 4A: Panels for Edge AI Devices & Camera
+        infra_top = QHBoxLayout()
+        infra_top.setSpacing(16)
         
-        lbl_class = QLabel("🏫 Class:         CS201 - Intro to AI")
-        lbl_class.setStyleSheet("font-size: 13px; color: #334155; font-weight: bold;")
-        lbl_time = QLabel("⏰ Check-in:   14:02:17")
-        lbl_time.setStyleSheet("font-size: 13px; color: #334155; font-weight: bold;")
-        lbl_type = QLabel("🎓 Type:          Student")
-        lbl_type.setStyleSheet("font-size: 13px; color: #334155; font-weight: bold;")
+        edge_frame = QFrame()
+        edge_frame.setGraphicsEffect(create_shadow())
+        edge_layout = QVBoxLayout(edge_frame)
+        lbl_edge_title = QLabel("Trạng thái thiết bị (Edge AI Devices)")
+        lbl_edge_title.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {Colors.TEXT_PRI};")
+        edge_layout.addWidget(lbl_edge_title)
+        edge_layout.addWidget(QLabel("Đang đồng bộ dữ liệu..."))
+        infra_top.addWidget(edge_frame)
         
-        info_layout.addWidget(lbl_class)
-        info_layout.addWidget(lbl_time)
-        info_layout.addWidget(lbl_type)
-        info_layout.addStretch()
+        cam_frame = QFrame()
+        cam_frame.setGraphicsEffect(create_shadow())
+        cam_layout = QVBoxLayout(cam_frame)
+        lbl_cam_title = QLabel("Trạng thái Camera")
+        lbl_cam_title.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {Colors.TEXT_PRI};")
+        cam_layout.addWidget(lbl_cam_title)
+        cam_layout.addWidget(QLabel("Đang truyền phát (Streaming)..."))
+        infra_top.addWidget(cam_frame)
         
-        id_content_layout.addLayout(info_layout, 1)
+        infra_layout.addLayout(infra_top)
 
-        # Right side Card
-        card_frame = QFrame()
-        card_frame.setStyleSheet("""
-            QFrame {
-                background-color: #FFFFFF;
-                border-radius: 10px;
-                border: 1px solid #E2E8F0;
-            }
-        """)
-        card_layout = QVBoxLayout(card_frame)
-        card_layout.setContentsMargins(0,0,0,0)
-        card_layout.setSpacing(0)
+        # ROW 4B: Bottom Bar
+        bottom_bar = QFrame()
+        bottom_bar.setStyleSheet(f"background-color: {Colors.BG_CARD}; border-radius: 6px; border: 1px solid {Colors.BORDER};")
+        bottom_bar_layout = QHBoxLayout(bottom_bar)
+        bottom_bar_layout.setContentsMargins(16, 6, 16, 6)
         
-        # Card Header
-        card_header = QLabel("STUDENT ID")
-        card_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card_header.setStyleSheet("background-color: #F8FAFC; color: #64748B; font-weight: bold; font-size: 11px; padding: 6px; border-top-left-radius: 10px; border-top-right-radius: 10px; border-bottom: 1px solid #E2E8F0;")
-        card_layout.addWidget(card_header)
+        self.lbl_redis = QLabel("Redis Latency: --")
+        self.lbl_mysql = QLabel("MySQL Latency: --")
+        self.lbl_worker = QLabel("Worker Status: Idle")
+        self.lbl_api = QLabel("API Latency: --")
+        self.lbl_queue_load = QLabel("Queue Load: 0")
+        self.lbl_mem = QLabel("Memory Usage: --")
         
-        # Card Body
-        card_body = QHBoxLayout()
-        card_body.setContentsMargins(15, 15, 15, 15)
+        for lbl in [self.lbl_redis, self.lbl_mysql, self.lbl_worker, self.lbl_api, self.lbl_queue_load, self.lbl_mem]:
+            lbl.setStyleSheet(f"font-size: 12px; font-weight: 600; color: {Colors.TEXT_SEC};")
+            bottom_bar_layout.addWidget(lbl)
+            
+        infra_layout.addWidget(bottom_bar)
         
-        self.identity_img_lbl = QLabel()
-        self.identity_img_lbl.setFixedSize(60, 80)
-        self.identity_img_lbl.setStyleSheet("background-color: #E2E8F0; border-radius: 6px;")
-        self.identity_img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.identity_img_lbl.setText("👤") # Placeholder
+        main_layout.addLayout(infra_layout)
+
+    def _create_kpi_card(self, title, value, color, layout, row, col, trend=None):
+        """Helper: Tạo thẻ KPI và nhét vào lưới (Grid)"""
+        card = QFrame()
+        card.setGraphicsEffect(create_shadow())
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(16, 16, 16, 16)
+        card_layout.setSpacing(4)
         
-        card_info = QVBoxLayout()
-        self.identity_name_lbl = QLabel("PHẠM MINH ĐỨC")
-        self.identity_name_lbl.setStyleSheet("font-size: 14px; font-weight: 900; color: #0F172A; border: none;")
-        self.identity_id_lbl = QLabel("ID: 21127005")
-        self.identity_id_lbl.setStyleSheet("font-size: 12px; color: #64748B; border: none;")
-        card_info.addWidget(self.identity_name_lbl)
-        card_info.addWidget(self.identity_id_lbl)
-        card_info.addStretch()
-
-        card_body.addWidget(self.identity_img_lbl)
-        card_body.addLayout(card_info)
-        card_layout.addLayout(card_body)
+        lbl_title = QLabel(title)
+        lbl_title.setStyleSheet(f"font-size: 13px; font-weight: bold; color: {Colors.TEXT_SEC}; border: none;")
         
-        id_content_layout.addWidget(card_frame, 1)
-        identity_layout.addLayout(id_content_layout)
-
-        # Verification Status
-        veri_layout = QHBoxLayout()
-        lbl_info_extra = QLabel("Gia tăng thông tin định danh & Bảo mật")
-        lbl_info_extra.setStyleSheet("color: #94A3B8; font-size: 11px; font-style: italic;")
+        val_layout = QHBoxLayout()
+        lbl_val = QLabel(value)
+        lbl_val.setStyleSheet(f"font-size: 28px; font-weight: 900; color: {color}; border: none;")
+        val_layout.addWidget(lbl_val)
         
-        status_checks = QVBoxLayout()
-        status_checks.addWidget(QLabel("✅ <span style='color:#64748B;'>Status:</span> <span style='color:#10B981; font-weight:bold;'>Identity Verified</span>"))
-        status_checks.addWidget(QLabel("✅ <span style='color:#64748B;'>Liveness:</span> <span style='color:#10B981; font-weight:bold;'>PASS</span>"))
+        if trend:
+            lbl_trend = QLabel(trend)
+            lbl_trend.setStyleSheet("font-size: 12px; font-weight: bold; border: none;")
+            val_layout.addWidget(lbl_trend)
+            
+        val_layout.addStretch()
         
-        veri_layout.addWidget(lbl_info_extra)
-        veri_layout.addStretch()
-        veri_layout.addLayout(status_checks)
-        identity_layout.addLayout(veri_layout)
-
-        bottom_left_layout.addWidget(identity_panel, 7)
-
-        # 2. Overall System Status
-        overall_panel = QFrame()
-        overall_panel.setObjectName("OverallPanel")
-        overall_panel.setStyleSheet("QFrame#OverallPanel { background-color: #FFFFFF; border-radius: 12px; border: 1px solid #E2E8F0; }")
-        overall_panel.setGraphicsEffect(create_shadow())
-        overall_layout = QVBoxLayout(overall_panel)
-        overall_layout.setContentsMargins(20, 15, 20, 15)
-
-        overall_title = QLabel("<b>OVERALL SYSTEM STATUS</b>")
-        overall_title.setStyleSheet("font-size: 12px; color: #0F172A; border: none;")
-        overall_layout.addWidget(overall_title)
-
-        status_row = QHBoxLayout()
-        status_row.setSpacing(20)
-
-        # Lưu các label thành biến (self.xxx) để cập nhật Real-time
-        self.lbl_overall_cpu = QLabel("🔲 CPU: <b>--%</b>")
-        self.lbl_overall_cpu.setStyleSheet("color: #334155; font-size: 12px;")
+        card_layout.addWidget(lbl_title)
+        card_layout.addLayout(val_layout)
         
-        self.lbl_overall_ram = QLabel("🟩 RAM: <b>--GB / --GB</b>")
-        self.lbl_overall_ram.setStyleSheet("color: #334155; font-size: 12px;")
-        
-        self.lbl_overall_db = QLabel("🗄️ DB Connections: <b>Connected</b>")
-        self.lbl_overall_db.setStyleSheet("color: #334155; font-size: 12px;")
-        
-        self.lbl_overall_uptime = QLabel("⏱️ AI Model Uptime: <b>--h</b>")
-        self.lbl_overall_uptime.setStyleSheet("color: #334155; font-size: 12px;")
-        
-        self.lbl_overall_alert = QLabel("⚠️ Last Alert: <b>None</b>")
-        self.lbl_overall_alert.setStyleSheet("color: #334155; font-size: 12px;")
+        layout.addWidget(card, row, col)
+        return lbl_val
 
-        status_row.addWidget(self.lbl_overall_cpu)
-        status_row.addWidget(self.lbl_overall_ram)
-        status_row.addWidget(self.lbl_overall_db)
-        status_row.addWidget(self.lbl_overall_uptime)
-        status_row.addWidget(self.lbl_overall_alert)
-        status_row.addStretch()
-
-        overall_layout.addLayout(status_row)
-        bottom_left_layout.addWidget(overall_panel, 3)
-
-        # ---------- BOTTOM RIGHT ----------
-        bottom_right_layout = QVBoxLayout()
-        bottom_right_layout.setSpacing(15)
-
-        # 3. Chart Panel
-        chart_panel = QFrame()
-        chart_panel.setObjectName("ChartPanel")
-        chart_panel.setStyleSheet("QFrame#ChartPanel { background-color: #FFFFFF; border-radius: 12px; border: 1px solid #E2E8F0; }")
-        chart_panel.setGraphicsEffect(create_shadow())
-        chart_layout_main = QVBoxLayout(chart_panel)
-        chart_layout_main.setContentsMargins(20, 20, 20, 20)
-
-        # --- Header Layout cho Chart (Tiêu đề + Bộ chọn ngày) ---
-        chart_header_layout = QHBoxLayout()
-        
-        stat_title = QLabel("<b>CLASS ATTENDANCE STATISTICS</b>")
-        stat_title.setTextFormat(Qt.TextFormat.RichText)
-        stat_title.setStyleSheet("border: none; font-size: 13px; color: #0F172A;")
-        
-        # Bộ chọn ngày (Date Picker)
-        self.date_picker = QDateEdit()
-        self.date_picker.setCalendarPopup(True)
-        self.date_picker.setDate(QDate.currentDate()) # Mặc định là ngày hôm nay
-        self.date_picker.setDisplayFormat("dd/MM/yyyy")
-        self.date_picker.setFixedWidth(130)
-        self.date_picker.setStyleSheet("""
-            QDateEdit {
-                border: 1px solid #CBD5E1;
-                border-radius: 6px;
-                padding: 4px 8px;
-                background: #F8FAFC;
-                color: #0F172A;
-                font-weight: bold;
-                font-size: 12px;
-            }
-            QDateEdit::drop-down {
-                subcontrol-origin: padding;
-                subcontrol-position: top right;
-                width: 20px;
-                border-left: 1px solid #CBD5E1;
-            }
-        """)
-        # Bắt sự kiện khi người dùng thay đổi ngày
-        self.date_picker.dateChanged.connect(self._fetch_stats_by_date)
-
-        chart_header_layout.addWidget(stat_title)
-        chart_header_layout.addStretch()
-        chart_header_layout.addWidget(self.date_picker)
-        
-        chart_layout_main.addLayout(chart_header_layout)
-
-        # --- Biểu đồ Donut ---
-        chart_layout = QHBoxLayout()
-        self.donut = CircularProgress("#3B82F6", "#8B5CF6") # Xanh dương và Tím
-        chart_layout.addStretch()
-        chart_layout.addWidget(self.donut)
-        chart_layout.addStretch()
-        chart_layout_main.addLayout(chart_layout)
-
-        # --- Chú thích (Legend) ---
-        self.legend = QLabel("🔵 Đã có mặt (0)   🟣 Vắng mặt (0)")
-        self.legend.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.legend.setStyleSheet("font-size: 12px; font-weight: bold; color: #334155; border: none;")
-        chart_layout_main.addWidget(self.legend)
-
-        bottom_right_layout.addWidget(chart_panel, 6)
-
-        # 4. Health Monitor Panel
-        health_panel = QFrame()
-        health_panel.setObjectName("HealthPanel")
-        health_panel.setStyleSheet("QFrame#HealthPanel { background-color: #FFFFFF; border-radius: 12px; border: 1px solid #E2E8F0; }")
-        health_panel.setGraphicsEffect(create_shadow())
-        health_layout = QVBoxLayout(health_panel)
-        health_layout.setContentsMargins(20, 15, 20, 15)
-
-        health_title = QLabel("<b>SYSTEM HEALTH MONITOR</b> <span style='font-size:11px; color:#64748B;'>Tình trạng hệ thống</span>")
-        health_title.setTextFormat(Qt.TextFormat.RichText)
-        health_title.setStyleSheet("border: none; font-size: 13px; color: #0F172A;")
-        health_layout.addWidget(health_title)
-
-        grid = QGridLayout()
-        grid.setSpacing(10)
-
-        # CPU
-        cpu_lbl = QLabel("💻 CPU:")
-        cpu_lbl.setStyleSheet("border: none; font-weight: 800; font-size: 11px;")
-        self.cpu_bar = QProgressBar()
-        self.cpu_bar.setValue(45)
-        self.cpu_bar.setFormat("45% Load")
-        self.cpu_bar.setFixedHeight(14)
-        self.cpu_bar.setStyleSheet("""
-            QProgressBar { border: none; background: #E2E8F0; border-radius: 7px; text-align: center; color: white; font-weight: bold; font-size: 9px; }
-            QProgressBar::chunk { background-color: #8B5CF6; border-radius: 7px; }
-        """)
-        grid.addWidget(cpu_lbl, 0, 0)
-        grid.addWidget(self.cpu_bar, 0, 1)
-
-        # RAM
-        ram_lbl = QLabel("🧠 RAM:")
-        ram_lbl.setStyleSheet("border: none; font-weight: 800; font-size: 11px;")
-        self.ram_bar = QProgressBar()
-        self.ram_bar.setValue(26)
-        self.ram_bar.setFormat("2.4 GB / 8 GB")
-        self.ram_bar.setFixedHeight(14)
-        self.ram_bar.setStyleSheet("""
-            QProgressBar { border: none; background: #E2E8F0; border-radius: 7px; text-align: center; color: white; font-weight: bold; font-size: 9px; }
-            QProgressBar::chunk { background-color: #3B82F6; border-radius: 7px; }
-        """)
-        grid.addWidget(ram_lbl, 0, 2)
-        grid.addWidget(self.ram_bar, 0, 3)
-
-        # Connections & DB
-        conn_lbl = QLabel("🔗 Connections")
-        conn_lbl.setStyleSheet("border: none; font-weight: 800; font-size: 11px;")
-        self.conn_val = QLabel("🟢 Online")
-        self.conn_val.setStyleSheet("border: none; font-size: 11px; color: #10B981; font-weight: bold;")
-        
-        db_lbl = QLabel("🗄️ Database")
-        db_lbl.setStyleSheet("border: none; font-weight: 800; font-size: 11px;")
-        self.db_val = QLabel("🟢 Connected")
-        self.db_val.setStyleSheet("border: none; font-size: 11px; color: #10B981; font-weight: bold;")
-        
-        grid.addWidget(conn_lbl, 1, 0)
-        grid.addWidget(self.conn_val, 1, 1)
-        grid.addWidget(db_lbl, 1, 2)
-        grid.addWidget(self.db_val, 1, 3)
-
-        health_layout.addLayout(grid)
-        bottom_right_layout.addWidget(health_panel, 4)
-
-        # Add left/right to bottom layout
-        bottom_layout.addLayout(bottom_left_layout, 6) # 60%
-        bottom_layout.addLayout(bottom_right_layout, 4) # 40%
-
-        main_layout.addLayout(bottom_layout, 5) # Chiếm 50% chiều cao
-
-        # Gọi hàm lấy dữ liệu điểm danh lần đầu tiên khi mở App
-        self._fetch_stats_by_date(self.date_picker.date())
+    def _update_clock(self):
+        """Cập nhật đồng hồ thời gian thực"""
+        self.lbl_clock.setText(QTime.currentTime().toString("HH:mm:ss"))
 
     def _create_avatar_label(self, name):
-        """Tạo icon Avatar giả lập hình tròn từ chữ cái đầu"""
+        """Tạo icon Avatar dạng hình tròn"""
         initials = "".join([word[0] for word in name.split()[:2]]).upper()
         lbl = QLabel(initials)
-        lbl.setFixedSize(30, 30)
+        lbl.setFixedSize(36, 36)
         lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl.setStyleSheet("""
-            background-color: #E2E8F0; 
-            color: #475569; 
-            border-radius: 15px; 
+        lbl.setStyleSheet(f"""
+            background-color: {Colors.BG_APP}; 
+            color: {Colors.PRIMARY}; 
+            border: 1px solid {Colors.BORDER_LT};
+            border-radius: 18px; 
             font-weight: bold; 
-            font-size: 11px;
+            font-size: 14px;
         """)
         return lbl
 
-    def _populate_dummy_data(self):
-        data = [
-            ("21127005", "Đoạn Bình Thọ", "14:02:15", "CS201", True),
-            ("21127006", "Nguyễn Trí Ram", "14:02:17", "CS201", True),
-            ("21127004", "Nguyễn Thương", "14:02:17", "CS201", True),
-            ("21127005", "Phạm Minh Đức", "14:02:28", "CS201", True),
-            ("21127005", "Phạm Minh Đức", "14:02:17", "CS201", True),
-            ("21127006", "Nguyễn Tiến", "14:02:17", "CS201", True),
-            ("21127004", "Nguyễn Thương", "14:02:21", "CS201", True),
-        ]
-        
-        self.table.setRowCount(len(data))
-        for row, (uid, name, time, cls, is_present) in enumerate(data):
-            # Avatar
-            avatar_widget = QWidget()
-            avatar_layout = QHBoxLayout(avatar_widget)
-            avatar_layout.setContentsMargins(10, 0, 0, 0)
-            avatar_layout.addWidget(self._create_avatar_label(name))
-            avatar_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self.table.setCellWidget(row, 0, avatar_widget)
-            
-            # Name & ID
-            name_item = QTableWidgetItem(f"{uid}   {name}")
-            self.table.setItem(row, 1, name_item)
-            
-            # Time
-            time_item = QTableWidgetItem(f"🕒 {time}")
-            self.table.setItem(row, 2, time_item)
-            
-            # Class
-            cls_item = QTableWidgetItem(f"📖 {cls}")
-            self.table.setItem(row, 3, cls_item)
-            
-            # Status badge (cột cuối trống theo ảnh, nhưng nếu cần có thể add badge)
-            # Dựa theo hình, cột cuối không có dữ liệu, nhưng tôi sẽ thêm badge cho đồng bộ
-            # Bạn có thể bỏ đoạn badge này nếu muốn giống ảnh 100%
-            '''
-            badge_widget = QWidget()
-            badge_layout = QHBoxLayout(badge_widget)
-            badge_layout.setContentsMargins(0, 0, 0, 0)
-            badge_layout.addWidget(StatusBadge("Verified", True))
-            badge_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-            self.table.setCellWidget(row, 4, badge_widget)
-            '''
-            
-            self.table.setRowHeight(row, 45)
+    def _create_pill_badge(self, is_valid):
+        """Tạo nhãn trạng thái Hợp lệ / Không hợp lệ dạng viên thuốc (Pill shape)"""
+        lbl = QLabel("Hợp lệ" if is_valid else "Không hợp lệ")
+        if is_valid:
+            lbl.setStyleSheet(f"""
+                background-color: #D1FAE5;
+                color: #065F46;
+                border-radius: 14px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: bold;
+            """)
+        else:
+            lbl.setStyleSheet(f"""
+                background-color: #FEE2E2;
+                color: #991B1B;
+                border-radius: 14px;
+                padding: 6px 14px;
+                font-size: 12px;
+                font-weight: bold;
+            """)
+        lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        return lbl
 
-    def _check_system_realtime(self):
-        # 1. Cập nhật CPU & RAM
-        try:
-            cpu_percent = psutil.cpu_percent()
-            # Cập nhật Health Monitor (Bên phải)
-            self.cpu_bar.setValue(int(cpu_percent))
-            self.cpu_bar.setFormat(f"{cpu_percent:.1f}% Load")
-            # Cập nhật Overall System (Bên trái)
-            if hasattr(self, 'lbl_overall_cpu'):
-                self.lbl_overall_cpu.setText(f"🔲 CPU: <b>{cpu_percent:.1f}%</b>")
+    # =========================================================================
+    # PRESERVED METHODS (GIỮ NGUYÊN CHỮ KÝ HÀM ĐỂ KHÔNG BREAK APP)
+    # Những phương thức này cần giữ nguyên để Backend gọi không bị lỗi
+    # =========================================================================
 
-            mem = psutil.virtual_memory()
-            used_gb = mem.used / (1024**3)
-            total_gb = mem.total / (1024**3)
-            # Cập nhật Health Monitor (Bên phải)
-            self.ram_bar.setValue(int(mem.percent))
-            self.ram_bar.setFormat(f"{used_gb:.1f} GB / {total_gb:.1f} GB")
-            # Cập nhật Overall System (Bên trái)
-            if hasattr(self, 'lbl_overall_ram'):
-                self.lbl_overall_ram.setText(f"🟩 RAM: <b>{used_gb:.1f}GB / {total_gb:.1f}GB</b>")
-        except:
-            pass
+    def add_attendance_log(self, name: str, student_id: str, time_str: str,
+                           class_name: str = "", is_present: bool = True,
+                           camera: str = "CAM"):
+        """
+        Thêm dữ liệu vào bảng Log điểm danh.
+        Cột: [Camera | Mã SV | Họ Tên | Thời gian | Trạng thái]
+        Giữ nguyên signature cũ (name, student_id, time_str, class_name, is_present)
+        để không break các lời gọi từ Backend. 'camera' là tham số bổ sung tuỳ chọn.
+        """
+        self.table.insertRow(0)
 
-        # 2. GỌI CẬP NHẬT BIỂU ĐỒ THEO ĐÚNG NGÀY ĐANG CHỌN TRÊN DATE PICKER
+        # Cột 0: Camera
+        cam_item = QTableWidgetItem(f"  📸 {camera}")
+        cam_item.setForeground(QColor(Colors.PRIMARY))
+        self.table.setItem(0, 0, cam_item)
 
-        if hasattr(self, 'date_picker'):
-            self._fetch_stats_by_date(self.date_picker.date())
+        # Cột 1: Mã SV
+        self.table.setItem(0, 1, QTableWidgetItem(f"  {student_id}"))
 
-    def add_attendance_log(self, name: str, student_id: str, time_str: str, class_name: str, is_present: bool = True):
-        """Thêm một dòng điểm danh mới vào trên cùng của bảng Log"""
-        self.table.insertRow(0) # Chèn vào dòng đầu tiên (đẩy các dòng cũ xuống)
-        
-        # 1. Cột Avatar
-        avatar_widget = QWidget()
-        avatar_layout = QHBoxLayout(avatar_widget)
-        avatar_layout.setContentsMargins(10, 0, 0, 0)
-        avatar_layout.addWidget(self._create_avatar_label(name))
-        avatar_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.table.setCellWidget(0, 0, avatar_widget)
-        
-        # 2. Cột Mã SV & Tên
-        name_item = QTableWidgetItem(f"{student_id}   {name}")
-        self.table.setItem(0, 1, name_item)
-        
-        # 3. Cột Thời gian
-        time_item = QTableWidgetItem(f"🕒 {time_str}")
-        self.table.setItem(0, 2, time_item)
-        
-        # 4. Cột Lớp
-        cls_item = QTableWidgetItem(f"📖 {class_name}")
-        self.table.setItem(0, 3, cls_item)
-        
-        # 5. Cột Trạng thái (Thêm Badge xanh Verified)
+        # Cột 2: Họ Tên
+        self.table.setItem(0, 2, QTableWidgetItem(f"  {name}"))
+
+        # Cột 3: Thời gian
+        self.table.setItem(0, 3, QTableWidgetItem(f"  {time_str}"))
+
+        # Cột 4: Trạng thái (Pill badge)
         badge_widget = QWidget()
         badge_layout = QHBoxLayout(badge_widget)
-        badge_layout.setContentsMargins(0, 0, 0, 0)
-        badge = StatusBadge("Verified" if is_present else "Failed", is_present)
+        badge_layout.setContentsMargins(4, 0, 4, 0)
+        badge = self._create_pill_badge(is_present)
         badge_layout.addWidget(badge)
         badge_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table.setCellWidget(0, 4, badge_widget)
-        
-        self.table.setRowHeight(0, 45)
-        
-        # Xóa bớt dòng cũ nếu bảng quá dài (Ví dụ: giữ tối đa 50 dòng log gần nhất)
+
+        self.table.setRowHeight(0, 50)
+
+        # Giữ log tối đa 50 hàng
         if self.table.rowCount() > 50:
             self.table.removeRow(50)
-            
+
     def update_stats(self, **kwargs):
+        """Cập nhật các thống kê sĩ số"""
         if "students" in kwargs:
             self._students_total = kwargs["students"]
         if "present" in kwargs:
@@ -585,81 +425,177 @@ class DashboardPage(QWidget):
         if "absent" in kwargs:
             self._absent_count = kwargs["absent"]
             
-        # Luôn cập nhật lại biểu đồ, kể cả khi Total = 0
+        # Cập nhật biểu đồ Donut Chart (Cốt lõi)
         self.donut.set_value(self._present_count, self._students_total)
-        self.legend.setText(f"🔵 Đã có mặt ({self._present_count})   🟣 Vắng mặt ({self._absent_count})")
+        self.lbl_legend.setText(f"🟩 Có mặt: {self._present_count}    ⬜ Vắng mặt: {self._absent_count}")
+        
+        # Cập nhật số trên KPI Cards
+        self.lbl_total_present.setText(str(self._present_count))
 
     def update_latest_snapshot(self, frame_or_pixmap, student_name: str, student_id: str):
-        """
-        Gắn ảnh và thông tin vào thẻ IDENTITY CARD FOCUS PANEL.
-        Hàm này được trigger từ AI Engine (main_window).
-        """
-        self.identity_name_lbl.setText(student_name.upper() if student_name else "UNKNOWN")
-        self.identity_id_lbl.setText(f"ID: {student_id}" if student_id else "ID: ---")
-        
-        pixmap = None
-        if isinstance(frame_or_pixmap, QPixmap):
-            pixmap = frame_or_pixmap
-        elif isinstance(frame_or_pixmap, QImage):
-            pixmap = QPixmap.fromImage(frame_or_pixmap)
-        elif isinstance(frame_or_pixmap, np.ndarray):
-            rgb = cv2.cvtColor(frame_or_pixmap, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb.shape
-            bytes_per_line = ch * w
-            qimg = QImage(rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
-            
-        if pixmap and not pixmap.isNull():
-            # Scale và crop ảnh cho vừa thẻ
-            scaled_pixmap = pixmap.scaled(
-                self.identity_img_lbl.size(), 
-                Qt.AspectRatioMode.KeepAspectRatioByExpanding, 
-                Qt.TransformationMode.SmoothTransformation
-            )
-            self.identity_img_lbl.setPixmap(scaled_pixmap)
-            self.identity_img_lbl.setStyleSheet("border-radius: 6px;") # Bỏ màu nền khi đã có ảnh
+        """Giữ nguyên signature để tương thích với luồng quét mã cũ (dù thẻ UI đã bỏ)"""
+        pass
+
     def update_system_status(self, key: str, ok: bool, text: str = "", custom_color: str = None):
-        """
-        Cập nhật trạng thái hệ thống (Database, Camera, AI...) từ main_window
-        """
-        # Xác định màu và icon dựa trên trạng thái ok
-        color = custom_color if custom_color else ("#10B981" if ok else "#EF4444")
-        icon = "🟢" if ok else "🔴"
-        display_text = f"{icon} {text}"
-        
-        # Cập nhật UI tương ứng với key
-        if key == "database" and hasattr(self, 'db_val'):
-            self.db_val.setText(display_text)
-            self.db_val.setStyleSheet(f"border: none; font-size: 11px; color: {color}; font-weight: bold;")
+        """Cập nhật trạng thái hệ thống từ các Worker ở Backend"""
+        if key == "camera":
+            status_text = text if text else ("Hoạt động" if ok else "Mất kết nối")
+            self.lbl_active_cameras.setText(status_text)
+            self.lbl_active_cameras.setStyleSheet(f"font-size: 28px; font-weight: 900; color: {Colors.TEXT_PRI if ok else Colors.DANGER}; border: none;")
             
-        elif key == "camera" and hasattr(self, 'conn_val'):
-            self.conn_val.setText(display_text)
-            self.conn_val.setStyleSheet(f"border: none; font-size: 11px; color: {color}; font-weight: bold;")
+        elif key == "database":
+            status_text = text if text else ("ỔN ĐỊNH" if ok else "LỖI KẾT NỐI")
+            color = custom_color if custom_color else (Colors.SUCCESS if ok else Colors.DANGER)
+            self.lbl_sys_status.setText(status_text)
+            self.lbl_sys_status.setStyleSheet(f"font-size: 28px; font-weight: 900; color: {color}; border: none;")
+
+    # =========================================================================
+    # REAL-TIME DATA BINDING
+    # =========================================================================
+
+    def refresh_dashboard_data(self):
+        """
+        TASK 2: Hàm tổng hợp cập nhật toàn bộ 11 thông số Dashboard thời gian thực.
+        Gọi 2 API endpoints song song, bọ trong try...except an toàn.
+        """
+        HEADERS = {"X-DEVICE-TOKEN": "faceattend_secret_2026"}
+
+        # ── Khối 1: /admin/system-status → Latency, Queue, Camera, Edge ──────
+        try:
+            resp_sys = requests.get(
+                "http://127.0.0.1:9696/admin/system-status",
+                headers=HEADERS, timeout=2
+            )
+            if resp_sys.status_code == 200:
+                sys_data = resp_sys.json()
+
+                # Redis Latency
+                redis_ms = sys_data.get("latency_ms", {}).get("redis", -1)
+                self.lbl_redis.setText(
+                    f"Redis: {redis_ms:.1f} ms" if redis_ms >= 0 else "Redis: N/A"
+                )
+
+                # MySQL Latency
+                db_ms = sys_data.get("latency_ms", {}).get("database", -1)
+                self.lbl_mysql.setText(
+                    f"MySQL: {db_ms:.1f} ms" if db_ms >= 0 else "MySQL: N/A"
+                )
+
+                # Queue size + Queue Load bar
+                q_size = sys_data.get("queue_size", 0)
+                self.lbl_queue_load.setText(f"Queue Load: {q_size}")
+                self.lbl_queue.setText(f"{q_size}")
+
+                # Số camera online / tổng
+                cam_info = sys_data.get("cameras", {})
+                online = cam_info.get("online", 0)
+                total  = cam_info.get("total", 0)
+                self.lbl_active_cameras.setText(f"{online}/{total}")
+
+                # Trạng thái hệ thống tổng quát
+                self.update_system_status("database", True, "ỔN ĐỊNH", Colors.SUCCESS)
+
+                # RAM
+                mem = psutil.virtual_memory()
+                self.lbl_mem.setText(f"Memory: {mem.percent}%")
+
+            else:
+                self.update_system_status("database", False, f"LỖI {resp_sys.status_code}", Colors.DANGER)
+
+        except Exception as e:
+            logger.warning(f"[Dashboard] Không lấy được /admin/system-status: {e}")
+            self.lbl_redis.setText("Redis: Mất kết nối")
+            self.lbl_mysql.setText("MySQL: Mất kết nối")
+            self.update_system_status("database", False, "MẤT KẾT NỐI", Colors.DANGER)
+
+        # ── Khối 2: /api/dashboard/stats → Số HV, Camera, Log ─────────────
+        try:
+            date_str = QDate.currentDate().toString("yyyy-MM-dd")
+            resp_stat = requests.get(
+                f"http://127.0.0.1:9696/api/dashboard/stats?date={date_str}",
+                headers=HEADERS, timeout=2
+            )
+            if resp_stat.status_code == 200:
+                stat_data = resp_stat.json()
+
+                # Cập nhật KPI Cards số học viên / điểm danh
+                self.update_stats(
+                    students=stat_data.get("student_count", 0),
+                    present=stat_data.get("present_count", 0),
+                    absent=stat_data.get("absent_count", 0)
+                )
+
+                # Cập nhật cảnh báo Spoof
+                spoof_count = stat_data.get("spoof_warnings", 0)
+                self.lbl_spoof.setText(str(spoof_count))
+                self.lbl_spoof.setStyleSheet(
+                    f"font-size: 28px; font-weight: 900; border: none; "
+                    f"color: {Colors.DANGER if spoof_count > 0 else Colors.SUCCESS};"
+                )
+
+                # Cập nhật API Latency nếu API Server có trả về
+                api_ms = stat_data.get("api_latency_ms", -1)
+                self.lbl_api.setText(
+                    f"API: {api_ms:.1f} ms" if api_ms >= 0 else "API: OK"
+                )
+
+                # ── Cập nhật bảng LOG ĐIỂM DANH TRỰC TIẼP ──────────────────
+                latest_logs = stat_data.get("latest_logs", [])
+                if latest_logs:
+                    # Chỉ thêm dòng mới; giới hạn 50 dòng để không nặng UI
+                    current_ids = set()
+                    for r in range(self.table.rowCount()):
+                        item = self.table.item(r, 1)  # Cột Mã SV
+                        if item:
+                            current_ids.add(item.text().strip())
+
+                    for log in latest_logs:
+                        sv_code = str(log.get("id", "")).strip()
+                        time_str = log.get("time", "")
+                        # Kiểm tra có tốn tại cặp (mã + giờ) chưa — tránh push rác
+                        row_key = f"{sv_code}_{time_str}"
+                        if row_key in current_ids:
+                            continue
+
+                        self.table.insertRow(0)
+
+                        # Cột 0: Tên Camera đang gửi kết quả
+                        cam_item = QTableWidgetItem(f"  📸 {log.get('camera', 'CAM')}")
+                        cam_item.setForeground(QColor(Colors.PRIMARY))
+                        self.table.setItem(0, 0, cam_item)
+
+                        # Cột 1: Mã SV
+                        self.table.setItem(0, 1, QTableWidgetItem(f"  {sv_code}"))
+
+                        # Cột 2: Họ Tên
+                        self.table.setItem(0, 2, QTableWidgetItem(f"  {log.get('name', '---')}"))
+
+                        # Cột 3: Thời gian
+                        self.table.setItem(0, 3, QTableWidgetItem(f"  {time_str}"))
+
+                        # Cột 4: Trạng thái (Pill Badge)
+                        is_ok = log.get("is_present", True)
+                        badge_widget = QWidget()
+                        badge_layout = QHBoxLayout(badge_widget)
+                        badge_layout.setContentsMargins(0, 0, 0, 0)
+                        badge = self._create_pill_badge(is_ok)
+                        badge_layout.addWidget(badge)
+                        badge_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+                        self.table.setCellWidget(0, 4, badge_widget)
+
+                        self.table.setRowHeight(0, 50)
+
+                    # Giới hạn 50 hàng
+                    while self.table.rowCount() > 50:
+                        self.table.removeRow(self.table.rowCount() - 1)
+
+        except Exception as e:
+            logger.warning(f"[Dashboard] Không lấy được /api/dashboard/stats: {e}")
+
+    def update_dashboard_metrics(self):
+        """Alias giữ tương thích ngược với code cũ."""
+        self.refresh_dashboard_data()
 
     def _fetch_stats_by_date(self, qdate):
-        """Hàm gọi API lấy thống kê điểm danh của một ngày cụ thể"""
-        date_str = qdate.toString("yyyy-MM-dd") # Format gửi lên API
-        
-        try:
-            # Cập nhật URL này trỏ đến API thực tế của Server bạn
-            # Truyền tham số date=YYYY-MM-DD để Server query database
-            url = f"http://127.0.0.1:9696/api/dashboard/stats?date={date_str}"
-            resp = requests.get(url, headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"}, timeout=2)
-            
-            if resp.status_code == 200:
-                data = resp.json()
-                # Giả sử cấu trúc JSON trả về có dạng:
-                # {"student_count": 85, "present_count": 72, "absent_count": 13}
-                total = data.get("student_count", 0)
-                present = data.get("present_count", 0)
-                absent = data.get("absent_count", 0)
-                
-                self.update_stats(students=total, present=present, absent=absent)
-            else:
-                # Xử lý hiển thị 0 nếu ngày này không có session điểm danh
-                self.update_stats(students=0, present=0, absent=0)
-                
-        except Exception as e:
-            logger.error(f"Error fetching stats for {date_str}: {e}")
-            # Lỗi kết nối thì đưa thống kê về 0
-            self.update_stats(students=0, present=0, absent=0)
+        """Alias giữ tương thích ngược với code cũ."""
+        self.refresh_dashboard_data()

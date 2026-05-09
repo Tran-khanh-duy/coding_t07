@@ -295,7 +295,7 @@ class EdgeClient:
             has_ram_cache = cam_id in self._multi_caches if target_camera_id else self._cache is not None
             
         if not has_ram_cache:
-            offline_cache, offline_ver = embedding_sync.load_cache(cam_id)
+            offline_cache, offline_ver = embedding_sync.load_cache_by_camera(cam_id)
             if offline_cache:
                 with self._cache_lock:
                     if target_camera_id:

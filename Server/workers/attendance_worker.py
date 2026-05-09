@@ -78,38 +78,60 @@ class AttendanceWorker:
         try:
             task_dict = json.loads(task_json)
             task = AttendanceTask(**task_dict)
-        except Exception as e:
-            logger.error(f"❌ Invalid task format: {task_json} | {e}")
+        except Exception as parse_err:
+            logger.error(f"[WORKER] Invalid task format: {task_json[:200]} | {parse_err}")
             self._send_to_dlq(task_json, "Invalid Format")
             return
 
-        logger.debug(f"⚙️ Đang xử lý điểm danh: {task.full_name} ({task.student_code})")
+        logger.debug(
+            f"[WORKER] Dang xu ly: '{task.full_name}' ({task.student_code}) "
+            f"| session={task.session_id} | score={task.recognition_score:.3f}"
+        )
 
         try:
-            # 1. Validate Session Active (Chặn nếu session bị đóng)
+            # ── Chot chan 1: Validate Session Active ──────────────────────────
             session = session_repo.get_by_id(task.session_id)
-            if not session or session.status != "ACTIVE":
-                logger.warning(f"⚠️ Từ chối điểm danh - Session {task.session_id} không hợp lệ hoặc đã đóng.")
+            if not session:
+                logger.error(
+                    f"[WORKER] [SKIP] session_id={task.session_id} KHONG TON TAI trong DB! "
+                    f"student='{task.full_name}' — Kiem tra lai session da bi xoa chua?"
+                )
+                return
+            if session.status != "ACTIVE":
+                logger.warning(
+                    f"[WORKER] [SKIP] Session {task.session_id} khong ACTIVE "
+                    f"(status hien tai: '{session.status}') "
+                    f"— student='{task.full_name}' bi tu choi.\n"
+                    f"  Nguyen nhan: Session co the da COMPLETED, PENDING, "
+                    f"hoac chua duoc start_session() goi."
+                )
                 return
 
-            # 2. Validate Duplicate (Đã điểm danh chưa?)
+            # ── Chot chan 2: Duplicate check ──────────────────────────────────
             already = record_repo.is_already_recorded(task.session_id, task.student_id)
             if already:
-                logger.warning(f"⏩ [SKIP] {task.full_name} đã điểm danh trong Session {task.session_id}.")
+                logger.info(
+                    f"[WORKER] [DUP] '{task.full_name}' da diem danh trong "
+                    f"session {task.session_id} — bo qua."
+                )
                 return
 
-            # 3. Insert DB
+            # ── Ghi DB ────────────────────────────────────────────────────────
             success = record_repo.record_attendance(
                 session_id=task.session_id,
                 student_id=task.student_id,
                 recognition_score=task.recognition_score,
-                camera_id=task.camera_id
+                camera_id=task.camera_id,
             )
 
             if success:
-                attendance_logger.info(f"✅ Ghi DB thành công: {task.full_name} (Session: {task.session_id} - Score: {task.recognition_score:.2f})")
-                
-                # Gửi thông báo qua Telegram (optional)
+                attendance_logger.info(
+                    f"[WORKER] [OK] Ghi DB thanh cong: '{task.full_name}' "
+                    f"| session={task.session_id} "
+                    f"| score={task.recognition_score:.2f}"
+                )
+
+                # Gui Telegram neu lop du
                 try:
                     import sys
                     from pathlib import Path
@@ -117,28 +139,48 @@ class AttendanceWorker:
                     if str(root_dir) not in sys.path:
                         sys.path.insert(0, str(root_dir))
                     from telegram_notifier import send_telegram_msg
-                    
-                    # 1. Tuỳ chọn: Gửi báo danh từng người (có thể bị nhiều tin nhắn, có thể comment lại)
-                    # msg = f"✅ ĐIỂM DANH (WORKER)\n👤 Học viên: {task.full_name}\n🆔 MSSV: {task.student_code}\n🏫 Lớp: {task.class_name}\n🕒 Thời gian: {task.timestamp}\n🎯 Độ tin cậy: {task.recognition_score*100:.1f}%"
-                    # threading.Thread(target=send_telegram_msg, args=(msg,), daemon=True).start()
-                    
-                    # 2. Kiểm tra nếu lớp ĐỦ thì gửi thông báo
-                    absent_count = record_repo.get_class_absent_count(task.session_id, task.class_name)
+
+                    absent_count = record_repo.get_class_absent_count(
+                        task.session_id, task.class_name
+                    )
                     if absent_count == 0:
                         redis_key = f"notified_full_{task.session_id}_{task.class_name}"
                         if not self.redis.get(redis_key):
-                            self.redis.set(redis_key, "1", ex=86400) # Lưu 1 ngày
-                            msg_full = f"{task.class_name} - Đủ"
-                            threading.Thread(target=send_telegram_msg, args=(msg_full,), daemon=True).start()
-                            
-                except Exception as e:
-                    logger.error(f"Lỗi gửi Telegram (Lớp đủ): {e}")
-            else:
-                raise Exception("Hàm record_attendance trả về False")
+                            self.redis.set(redis_key, "1", ex=86400)
+                            msg_full = f"{task.class_name} - Du"
+                            threading.Thread(
+                                target=send_telegram_msg, args=(msg_full,), daemon=True
+                            ).start()
+                except Exception as tg_err:
+                    logger.error(f"[WORKER] Loi gui Telegram (lop du): {tg_err}")
 
-        except Exception as e:
-            logger.error(f"❌ Lỗi ghi DB cho {task.full_name}: {e}")
+            else:
+                # record_attendance tra False: phan biet ro nguyen nhan
+                logger.error(
+                    f"[WORKER] [FAIL] record_attendance tra ve False!\n"
+                    f"  student_id  : {task.student_id} ('{task.full_name}')\n"
+                    f"  session_id  : {task.session_id}\n"
+                    f"  Kiem tra SQL: SELECT * FROM AttendanceRecords "
+                    f"WHERE session_id={task.session_id} "
+                    f"AND student_id={task.student_id}\n"
+                    f"  -> Neu rong: student KHONG thuoc session nay "
+                    f"(prefill ABSENT chua chay hoac class_id sai).\n"
+                    f"  -> Neu co dong: kiem tra loi UPDATE/upsert trong record_repo."
+                )
+                # Chuyen vao DLQ thay vi retry vo tan (vi retry cung se fail)
+                self._send_to_dlq(
+                    task.model_dump_json(),
+                    f"record_attendance=False | student={task.student_id} "
+                    f"session={task.session_id}"
+                )
+
+        except Exception as proc_err:
+            logger.exception(
+                f"[WORKER] CRITICAL: Exception khi xu ly task | "
+                f"student='{task.full_name}' ({task.student_id}) | {proc_err}"
+            )
             self._handle_failure(task)
+
 
     def _handle_failure(self, task: AttendanceTask):
         task.retry_count += 1

@@ -39,7 +39,7 @@ class CameraPreviewWidget(QWidget):
         self.setMinimumSize(480, 320)
         self.setStyleSheet(f"""
             background-color: #0A0E14;
-            border: 2px solid {Colors.BORDER};
+            border: none;
             border-radius: 12px;
         """)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -129,11 +129,7 @@ class CameraPreviewWidget(QWidget):
         else:
             self._draw_placeholder(painter, rect)
 
-        # 2. Vẽ viền bo góc ngoài cùng
-        pen = QPen(QColor(Colors.BORDER), 2)
-        painter.setPen(pen)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 10, 10)
+        # 2. (Đã gỡ bỏ: Không vẽ viền bo góc ngoài cùng để giữ thiết kế phẳng)
 
     def _draw_hud(self, painter, rect):
         """Vẽ các thành phần HUD trang trí."""

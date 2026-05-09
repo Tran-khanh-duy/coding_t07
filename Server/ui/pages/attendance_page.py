@@ -53,40 +53,80 @@ class AttendanceWorker(QThread):
 
     def run(self):
         import cv2, time
+        import os
         from config import camera_config
+        
+        # TASK 3 (Từ trước): Ép OpenCV ngắt kết nối nhanh nếu mất luồng RTSP
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "timeout;1000000"
 
         source = int(self.camera_source) if str(self.camera_source).isdigit() else self.camera_source
-        cap = cv2.VideoCapture(source)
-        if not cap.isOpened():
+        self.cap = cv2.VideoCapture(source)
+        if not self.cap.isOpened():
             self.error_occurred.emit(f"Không mở được camera (source={self.camera_source})")
             return
 
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
 
         last_time = time.time()
+        fail_logged = False
+        
         while self._running:
-            ret, frame = cap.read()
-            if not ret:
-                time.sleep(0.01)
-                continue
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    # TASK 3: Chặn Spam Log (Rate Limiting Logs)
+                    if not fail_logged:
+                        logger.error(f"Mất kết nối Camera (source={self.camera_source}). Đang thử lại...")
+                        self.error_occurred.emit("Mất kết nối Camera. Đang đợi...")
+                        fail_logged = True
+                    
+                    # TASK 1: Xử lý Vòng lặp bận (Nghỉ 3 giây nhả CPU)
+                    time.sleep(3)
+                    
+                    # TASK 2: Giải phóng tài nguyên an toàn trước khi Reconnect
+                    if self.cap is not None:
+                        self.cap.release()
+                        self.cap = None
+                        
+                    self.cap = cv2.VideoCapture(source)
+                    if self.cap.isOpened():
+                        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+                        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+                        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 2)
+                        fail_logged = False # Reset cờ log nếu kết nối lại thành công
+                    continue
 
-            now = time.time()
-            elapsed_ms = (now - last_time) * 1000
-            last_time = now
+                fail_logged = False
+                now = time.time()
+                elapsed_ms = (now - last_time) * 1000
+                last_time = now
 
-            if self._paused:
-                self.frame_ready.emit(frame, 0, [])
+                if self._paused:
+                    self.frame_ready.emit(frame, 0, [])
+                    time.sleep(0.033)
+                    continue
+
+                self.frame_ready.emit(frame, elapsed_ms, [])
+                
+                # Giới hạn FPS cơ bản để không tốn CPU Server
                 time.sleep(0.033)
-                continue
+                
+            except Exception as e:
+                if not fail_logged:
+                    logger.error(f"Lỗi Camera (source={self.camera_source}): {e}")
+                    self.error_occurred.emit("Lỗi đọc Camera. Đang thử lại...")
+                    fail_logged = True
+                    
+                time.sleep(3)
+                if getattr(self, 'cap', None) is not None:
+                    self.cap.release()
+                    self.cap = None
+                self.cap = cv2.VideoCapture(source)
 
-            self.frame_ready.emit(frame, elapsed_ms, [])
-            
-            # Giới hạn FPS cơ bản để không tốn CPU Server
-            time.sleep(0.033)
-
-        cap.release()
+        if getattr(self, 'cap', None) is not None:
+            self.cap.release()
         logger.info("Camera view stopped")
 
 
@@ -314,7 +354,7 @@ class AttendancePage(QWidget):
         # Timer tự động cập nhật đèn tín hiệu (Xanh/Đỏ)
         self._status_refresh_timer = QTimer(self)
         self._status_refresh_timer.timeout.connect(self._refresh_cameras)
-        self._status_refresh_timer.start(10000) # Cập nhật mỗi 10s
+        self._status_refresh_timer.start(3000) # Cập nhật mỗi 3s
 
         self._setup_ui()
 
@@ -571,10 +611,10 @@ class AttendancePage(QWidget):
 
         self._inp_subject = QComboBox()
         self._inp_subject.addItems([
-            "🌅 Sáng (0h – 9h)",
-            "☀️ Trưa (9h – 15h)",
-            "🌤 Chiều (15h – 21h)",
-            "🌙 Tối (21h – 24h)",
+            "🌅 Sáng (7h15)",
+            "🌤 Chiều (13h15)",
+            "🌙 Tối (19h00)",
+            "🚨 Đột xuất"
         ])
         self._inp_subject.setStyleSheet(combo_style())
         self._auto_select_session()
@@ -725,15 +765,41 @@ class AttendancePage(QWidget):
     # ─── Logic ────────────────────────────────
 
     def _auto_select_session(self):
+        # TASK 1: Tự động chọn ca học dựa trên giờ hệ thống
+        from datetime import datetime
         hour = datetime.now().hour
-        if hour < 9: idx = 0
-        elif hour < 15: idx = 1
-        elif hour < 21: idx = 2
-        else: idx = 3
+        
+        if 5 <= hour < 12:
+            idx = 0  # 🌅 Sáng
+        elif 12 <= hour < 18:
+            idx = 1  # 🌤 Chiều
+        elif 18 <= hour <= 23:
+            idx = 2  # 🌙 Tối
+        else:
+            idx = 3  # 🚨 Đột xuất (0h - 4h59)
+            
         self._inp_subject.setCurrentIndex(idx)
 
+    def _check_camera_port(self, ip_port: str, timeout=0.5) -> bool:
+        """
+        TASK 1: Hàm kiểm tra trạng thái thực bằng Socket (RTSP port).
+        Thay vì ping ICMP dễ bị chặn, thử connect trực tiếp TCP.
+        """
+        if not ip_port or ip_port == "OFFLINE" or ip_port.startswith("127."):
+            return False # Bỏ qua localhost hoặc OFFLINE
+            
+        import socket
+        try:
+            ip = ip_port.split(":")[0]
+            port = int(ip_port.split(":")[1]) if ":" in ip_port else 554
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect((ip, port))
+            return True
+        except Exception:
+            return False
+
     def _refresh_cameras(self):
-        """Tải danh sách camera và xây dựng Menu phân cấp cho nút chọn duy nhất."""
         try:
             cameras = camera_repo.get_all(active_only=True)
             self._cam_groups = {f"KTX E{i}": [] for i in range(1, 7)}
@@ -779,6 +845,10 @@ class AttendancePage(QWidget):
 
                                 # Trạng thái hiển thị
                                 display_ip = cam_ip if cam_ip else "OFFLINE"
+                                
+                                # TASK 2: Sử dụng dictionary trạng thái đã được quét ngầm, KHÔNG gọi socket đồng bộ trên UI
+                                from core.state_manager import state_manager
+                                real_online = state_manager.cameras_status.get(display_ip, False)
 
                                 # Camera RTSP URL đầy đủ từ ONVIF discovery
                                 if k.startswith("rtsp://"):
@@ -787,7 +857,7 @@ class AttendancePage(QWidget):
                                     except:
                                         ip_port = "IP Cam"
                                     
-                                    if not is_active:
+                                    if not real_online:
                                         label = f"🔴 IP Cam ({ip_port}) [MẤT KẾT NỐI]"
                                     else:
                                         label = f"🟢 IP Cam ({ip_port}) [ONLINE]"
@@ -796,7 +866,7 @@ class AttendancePage(QWidget):
                                     self._cam_groups[group_key].append((label, source, ip_port))
                                 else:
                                     # Sử dụng tên "cứng" từ Edge config (env.edge)
-                                    if not is_active or display_ip == "OFFLINE":
+                                    if not real_online:
                                         label = f"🔴 {cam_name} ({display_ip}) [MẤT KẾT NỐI]"
                                     else:
                                         label = f"🟢 {cam_name} ({display_ip}) [ONLINE]"
@@ -910,6 +980,19 @@ class AttendancePage(QWidget):
             self._db_poll_timer.start(1000)
             self._clock_timer.start(1000)
 
+            # TASK 2: Mapping Session Type dựa trên lựa chọn UI
+            raw_subject = self._inp_subject.currentText()
+            if "Sáng" in raw_subject:
+                session_type = "MORNING"
+            elif "Chiều" in raw_subject:
+                session_type = "AFTERNOON"
+            elif "Tối" in raw_subject:
+                session_type = "EVENING"
+            elif "Đột xuất" in raw_subject:
+                session_type = "EXTRA"
+            else:
+                session_type = "UNKNOWN"
+
             # Gửi lệnh START tới API Server
             def send_start():
                 try:
@@ -917,7 +1000,8 @@ class AttendancePage(QWidget):
                         "command": "START",
                         "session_id": sid,
                         "class_id": class_id,
-                        "target_camera": camera_source
+                        "target_camera": camera_source,
+                        "session_type": session_type  # Bổ sung session_type gửi lên API Server
                     }, headers={"X-DEVICE-TOKEN": "faceattend_secret_2026"}, timeout=5)
                 except Exception as ex:
                     logger.warning(f"Không thể gửi lệnh START tới API: {ex}")

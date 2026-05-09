@@ -40,6 +40,57 @@ class RedisStateManager:
         if not self.redis.exists("state:embedding_version"):
             self.redis.set("state:embedding_version", 0)
             self.redis.set("state:embedding_updated_at", "")
+            
+        # TASK 2: Dictionary lưu trạng thái camera trong RAM
+        self.cameras_status = {}
+        self._start_camera_monitor()
+
+    def _start_camera_monitor(self):
+        def _monitor_loop():
+            import time
+            import socket
+            from concurrent.futures import ThreadPoolExecutor
+            
+            def _check_camera_port(ip_port):
+                # TASK 1: Ép timeout cực ngắn (0.5s)
+                if not ip_port or ip_port == "OFFLINE" or ip_port.startswith("127."):
+                    return ip_port, False
+                try:
+                    ip = ip_port.split(":")[0]
+                    port = int(ip_port.split(":")[1]) if ":" in ip_port else 554
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                        s.settimeout(0.5)
+                        s.connect((ip, port))
+                    return ip_port, True
+                except Exception:
+                    return ip_port, False
+
+            while True:
+                try:
+                    # Lấy danh sách IP từ Redis edge_status
+                    ips_to_check = []
+                    edge_status = self.get_all_edge_status()
+                    for dev in edge_status.values():
+                        for cam_id, info in dev.get("camera_status", {}).items():
+                            source = info.get("source", cam_id) if isinstance(info, dict) else cam_id
+                            if isinstance(source, str) and source.startswith("rtsp://"):
+                                try:
+                                    ip = source.split("@")[1].split("/")[0] if "@" in source else source.split("://")[1].split("/")[0]
+                                    if ip: ips_to_check.append(ip)
+                                except: pass
+                    
+                    if ips_to_check:
+                        with ThreadPoolExecutor(max_workers=10) as ex:
+                            results = list(ex.map(_check_camera_port, set(ips_to_check)))
+                            for ip_port, status in results:
+                                self.cameras_status[ip_port] = status
+                except Exception as e:
+                    logger.warning(f"Lỗi Camera Monitor Thread: {e}")
+                
+                time.sleep(3)
+                
+        t = threading.Thread(target=_monitor_loop, daemon=True)
+        t.start()
 
     # =========================================================================
     # SYSTEM COMMAND & SESSION STATE

@@ -31,12 +31,24 @@ sys.path.insert(0, str(ROOT))
 sys.path.append(str(ROOT.parent / "Server"))
 
 # Tạo các thư mục cần thiết
-for folder in ["logs", "models", "database"]:
+for folder in ["logs", "models", "database", "core"]:
     (ROOT / folder).mkdir(parents=True, exist_ok=True)
+
+# ── PHẢI GỌI TRƯỚC MỌI IMPORT KHÁC ──────────────────────────────────────────
+# Cài đặt Loguru: ghi ra logs/edge.log, logs/error.log, logs/attend.log
+# với rotation 10MB, nén zip file cũ, giữ 14 ngày.
+from core.logger import setup_edge_logging
+_debug_mode = os.getenv("DEBUG", "false").lower() == "true"
+setup_edge_logging(log_level="INFO", debug=_debug_mode)
+# ─────────────────────────────────────────────────────────────────────────────
 
 from config import edge_config
 from headless_processor import headless_processor
 from edge_client import edge_client
+
+# Import thêm thư viện để chạy ngầm
+import threading
+from hardware_monitor import hardware_monitor_loop
 
 def run_headless():
     """Chạy Edge AI ở chế độ Headless (Không giao diện)."""
@@ -55,7 +67,17 @@ def run_headless():
     print("=" * 60)
 
     try:
-        # Khởi động xử lý AI
+        # 1. Kích hoạt luồng Hardware Monitor chạy ngầm (Gửi dữ liệu mỗi 60s)
+        server_url = edge_config.server_url or "http://127.0.0.1:9696"
+        edge_id = edge_config.device_name or "MINI_PC_01"
+        threading.Thread(
+            target=hardware_monitor_loop,
+            args=(server_url, edge_id),
+            daemon=True
+        ).start()
+        logger.info(f"Đã khởi động luồng Hardware Monitor (Gửi tới {server_url})")
+
+        # 2. Khởi động xử lý AI
         headless_processor.start()
     except KeyboardInterrupt:
         logger.info("Dừng hệ thống theo yêu cầu (KeyboardInterrupt)...")

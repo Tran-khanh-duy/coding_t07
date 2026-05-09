@@ -11,9 +11,15 @@ def send_telegram_msg(message):
         "chat_id": CHAT_ID,
         "text": message
     }
+    import json
     try:
+        # TASK 2: Sử dụng json.dumps với ensure_ascii=False và mã hóa cứng sang utf-8
+        # Điều này đảm bảo Requests không tự động can thiệp làm hỏng Unicode của tiếng Việt
+        json_data = json.dumps(payload, ensure_ascii=False).encode('utf-8')
+        headers = {'Content-Type': 'application/json; charset=utf-8'}
+        
         # Gửi request với timeout để không làm treo hệ thống nếu rớt mạng
-        response = requests.post(url, json=payload, timeout=5)
+        response = requests.post(url, data=json_data, headers=headers, timeout=5)
         if response.status_code == 200:
             print("Đã gửi thông báo Telegram thành công.")
         else:

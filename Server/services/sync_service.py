@@ -86,47 +86,69 @@ class SyncService:
                 time.sleep(1)
 
     def _do_sync(self):
-        """Thực hiện đẩy dữ liệu từ SQLite lên SQL Server."""
+        """Thuc hien day du lieu tu SQLite len SQL Server."""
         with sqlite3.connect(self.db_path) as conn:
-            # Lấy các bản ghi chưa đồng bộ
             rows = conn.execute(
-                "SELECT id, session_id, student_id, check_in_time, recognition_score, snapshot_path, camera_id "
+                "SELECT id, session_id, student_id, check_in_time, "
+                "recognition_score, snapshot_path, camera_id "
                 "FROM offline_records WHERE synced = 0"
             ).fetchall()
 
             if not rows:
                 return
 
-            logger.info(f"🔄 Đang đồng bộ {len(rows)} bản ghi lên Server...")
-            
+            logger.info(f"[SYNC] Dang dong bo {len(rows)} ban ghi len Server...")
+
             for row in rows:
                 rid, sid, stid, ts_str, score, path, cam = row
-                
+
                 try:
-                    # Chuyển string sang datetime
                     ts = datetime.fromisoformat(ts_str)
-                    
-                    # Gọi repo để lưu vào SQL Server
-                    # Dùng upsert để giữ đúng timestamp nguyên bản
-                    success = record_repo.upsert(
+
+                    # TASK 3 FIX: record_repo.upsert() tra ve int (record_id hoac -1),
+                    # KHONG phai bool. Gia tri -1 la truthy trong Python!
+                    # => Phai kiem tra record_id >= 0 thay vi 'if success'.
+                    record_id = record_repo.upsert(
                         session_id=sid,
                         student_id=stid,
-                        status='PRESENT',
+                        status="PRESENT",
                         check_in_time=ts,
-                        recognition_score=score
+                        recognition_score=score,
+                        camera_id=cam,
                     )
-                    
-                    if success:
-                        conn.execute("UPDATE offline_records SET synced = 1 WHERE id = ?", (rid,))
+
+                    if record_id >= 0:
+                        # Danh dau da dong bo trong SQLite buffer
+                        conn.execute(
+                            "UPDATE offline_records SET synced = 1 WHERE id = ?",
+                            (rid,)
+                        )
                         conn.commit()
-                        logger.success(f"✅ Đồng bộ thành công student_id={stid}")
+                        logger.success(
+                            f"[SYNC] OK: student_id={stid} | "
+                            f"session={sid} | record_id={record_id}"
+                        )
                     else:
-                        # Nếu fail (Vẫn mất mạng), dừng batch này lại để đợi chu kỳ sau
-                        logger.warning("Đồng bộ thất bại, có thể Server vẫn offline.")
-                        break
-                except Exception as e:
-                    logger.error(f"Lỗi khi đồng bộ dòng {rid}: {e}")
-                    break
+                        # TASK 3: record_id = -1 = upsert that bai
+                        # Nguyen nhan hang dau: student_id khong co trong
+                        # AttendanceRecords cua session nay (prefill ABSENT that bai).
+                        logger.error(
+                            f"[SYNC] FAIL: upsert tra ve -1 (rowcount=0)!\n"
+                            f"  student_id : {stid}\n"
+                            f"  session_id : {sid}\n"
+                            f"  Kiem tra: SELECT * FROM AttendanceRecords "
+                            f"WHERE session_id={sid} AND student_id={stid}\n"
+                            f"  Neu khong co dong nao: hoc vien nay KHONG thuoc "
+                            f"session {sid} (prefill ABSENT chua chay hoac "
+                            f"class_id cua hoc vien khac voi class_id cua session)."
+                        )
+                        # Khong break: thu dong bo cac ban ghi khac
+                        # (ban ghi nay se thu lai o chu ky sau)
+
+                except Exception as sync_err:
+                    logger.error(f"[SYNC] Loi khi dong bo dong {rid}: {sync_err}")
+                    break  # Dung batch, doi chu ky sau
+
 
     def stop(self):
         self._stop_event.set()

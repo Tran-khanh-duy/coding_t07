@@ -47,40 +47,48 @@ class StudentsPage(QWidget):
         header.addLayout(title_col)
         header.addStretch()
 
-        btn_add = QPushButton("➕  THÊM HỌC VIÊN MỚI")
+        # ── Action Buttons ──
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(12)
+
+        btn_add = QPushButton("➕ THÊM HỌC VIÊN MỚI")
         btn_add.setFixedHeight(42)
-        btn_add.setMinimumWidth(200)
+        btn_add.setMinimumWidth(180)
         btn_add.setCursor(Qt.CursorShape.PointingHandCursor)
         btn_add.setStyleSheet(f"""
             QPushButton {{
-                background: {Colors.CYAN}; color: white;
-                border: none; border-radius: 8px;
-                font-weight: 800; font-size: 13px; letter-spacing: 0.5px;
+                background-color: {Colors.CYAN}; color: white;
+                border: none; border-radius: 6px;
+                font-weight: bold; font-size: 13px; letter-spacing: 0.5px;
+                padding: 0px 16px;
             }}
-            QPushButton:hover {{ background: {Colors.CYAN_DIM}; }}
+            QPushButton:hover {{ background-color: {Colors.CYAN_DIM}; }}
         """)
         btn_add.clicked.connect(lambda: self.go_to_enroll.emit(-1))
-        header.addWidget(btn_add)
+        action_layout.addWidget(btn_add)
 
-        # Nút Làm mới (Sửa lỗi hiển thị ô vuông bằng cách dùng ký tự chuẩn)
-        btn_refresh = QPushButton("↻") 
-        btn_refresh.setFixedSize(42, 42)
+        btn_refresh = QPushButton("↻ LÀM MỚI") 
+        btn_refresh.setFixedHeight(42)
+        btn_refresh.setMinimumWidth(120)
         btn_refresh.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn_refresh.setToolTip("Làm mới danh sách")
+        btn_refresh.setToolTip("Làm mới danh sách dữ liệu")
         btn_refresh.setStyleSheet(f"""
             QPushButton {{
-                background: {Colors.BG_CARD}; color: {Colors.TEXT};
-                border: 1.5px solid {Colors.BORDER_LT}; border-radius: 8px;
-                font-size: 24px; font-weight: bold;
+                background-color: white; color: {Colors.TEXT_DARK};
+                border: 1px solid {Colors.BORDER_LT}; border-radius: 6px;
+                font-size: 13px; font-weight: bold; letter-spacing: 0.5px;
+                padding: 0px 16px;
             }}
             QPushButton:hover {{ 
-                background: {Colors.BG_HOVER}; 
+                background-color: {Colors.BG_HOVER}; 
                 border-color: {Colors.CYAN}; 
                 color: {Colors.CYAN};
             }}
         """)
         btn_refresh.clicked.connect(self.load_students)
-        header.addWidget(btn_refresh)
+        action_layout.addWidget(btn_refresh)
+        
+        header.addLayout(action_layout)
         
         layout.addLayout(header)
 

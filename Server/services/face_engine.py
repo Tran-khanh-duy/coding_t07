@@ -281,36 +281,52 @@ class FaceEngine:
         self,
         faces: list[DetectedFace],
         cache: EmbeddingCache,
+        # ╔══════════════════════════════════════════════════════════════════╗
+        # ║  KIẾN TRÚC MỚI: Edge Cache Partitioning                        ║
+        # ║  cache đã là shard đúng khu vực của Mini PC này.               ║
+        # ║  → TUYỆT ĐỐI KHÔNG truyền camera_building / camera_floor vào  ║
+        # ║    hàm này. Không có vòng lặp lọc vị trí nào ở đây.           ║
+        # ╚══════════════════════════════════════════════════════════════════╝
     ) -> list[RecognitionResult]:
         """
-        Nhận diện TẤT CẢ khuôn mặt trong frame cùng một lúc bằng Phép nhân Ma Trận.
-        10 người trong khung hình sẽ được xử lý chung trong 1 phép toán duy nhất.
+        Nhận diện hàng loạt khuôn mặt bằng phép nhân ma trận thuần NumPy.
 
-        FIX: Dùng result_map theo chỉ số gốc để đảm bảo thứ tự OUTPUT luôn khớp
-        với thứ tự INPUT faces — tránh lỗi nhãn tên bị gán nhầm bounding box.
-        FIX: One-to-one assignment — mỗi học sinh chỉ được gán cho 1 khuôn mặt
-        có score cao nhất, tránh trường hợp 2 khuôn mặt đều nhận ra cùng 1 người.
+        Thiết kế cho kiến trúc **Edge Cache Partitioning**:
+        - ``cache`` là file ``.pkl`` nhỏ đã được Server xuất sẵn cho đúng
+          khu vực (toà nhà / tầng) của Mini PC này.
+        - Không có vòng lặp lọc vị trí, không truyền ``camera_building`` /
+          ``camera_floor`` — toàn bộ cache đều là sinh viên hợp lệ.
+        - Đảm bảo **one-to-one assignment**: mỗi student_id chỉ được gán cho
+          đúng 1 khuôn mặt có cosine score cao nhất; khuôn mặt thua cuộc bị
+          xếp vào "Người Lạ".
+
+        Args:
+            faces: Danh sách :class:`DetectedFace` đầu ra của ``detect_faces()``.
+            cache: :class:`EmbeddingCache` cục bộ (shard) của khu vực này.
+
+        Returns:
+            Danh sách :class:`RecognitionResult` theo đúng thứ tự ``faces``.
         """
         if not faces:
             return []
 
-        # Nếu Cache trống (Chưa có học sinh nào trong DB)
+        # ── Guard: cache rỗng → toàn bộ là "Người Lạ" ──────────────────────
         if cache is None or cache.is_empty:
             return [
                 RecognitionResult(
                     bbox=face.bbox, det_score=face.det_score,
                     recognized=False, student_id=None, student_code=None,
-                    full_name=None, class_id=None, class_name=None, class_code=None, similarity=0.0
+                    full_name=None, class_id=None, class_name=None, class_code=None,
+                    similarity=0.0,
                 )
                 for face in faces
             ]
 
-        # ── Bước 1: Tách khuôn mặt hợp lệ, giữ nguyên index gốc ──────────────
+        # ── Bước 1: Tách khuôn mặt có embedding hợp lệ, giữ index gốc ──────
         # result_map[i] = RecognitionResult cho faces[i]
         result_map: dict[int, RecognitionResult] = {}
 
-        # (orig_index, face) của những mặt có embedding hợp lệ
-        valid_pairs: list[tuple[int, DetectedFace]] = []
+        valid_pairs: list[tuple[int, DetectedFace]] = []  # (orig_idx, face)
         embeddings_list: list[np.ndarray] = []
 
         for i, face in enumerate(faces):
@@ -318,66 +334,96 @@ class FaceEngine:
                 valid_pairs.append((i, face))
                 embeddings_list.append(face.embedding)
             else:
-                # Không có embedding → đánh dấu unknown ngay, giữ đúng vị trí
+                # Không trích được embedding → "Người Lạ" ngay lập tức
                 result_map[i] = RecognitionResult(
                     bbox=face.bbox, det_score=face.det_score,
                     recognized=False, student_id=None, student_code=None,
-                    full_name=None, class_id=None, similarity=0.0
+                    full_name=None, class_id=None, class_name=None, class_code=None,
+                    similarity=0.0,
                 )
 
+        # Không có face nào có embedding hợp lệ
         if not embeddings_list:
             return [result_map[i] for i in range(len(faces))]
 
-        # ── Bước 2: Ma trận cosine similarity (M, N) ──────────────────────────
-        emb_matrix = np.array(embeddings_list, dtype=np.float32)
+        # ── Bước 2: Chuẩn hoá L2 + nhân ma trận → cosine scores ─────────────
+        # emb_matrix shape: (M, 512)  — M = số face hợp lệ
+        emb_matrix: np.ndarray = np.array(embeddings_list, dtype=np.float32)
 
-        # Chuẩn hoá L2 toàn bộ M khuôn mặt (vectorised)
-        norms = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
-        norms[norms < 1e-8] = 1e-8
-        emb_matrix = emb_matrix / norms
+        norms: np.ndarray = np.linalg.norm(emb_matrix, axis=1, keepdims=True)
+        norms[norms < 1e-8] = 1e-8          # tránh chia cho 0
+        emb_matrix = emb_matrix / norms     # L2-normalized
 
-        # (M, 512) @ (512, N) → Ma trận điểm (M, N)
-        scores_matrix = emb_matrix @ cache.embeddings.T  # shape (M, N)
+        # (M, 512) @ (512, N) → scores_matrix shape (M, N)
+        # N = số sinh viên trong cache (nhỏ vì đã shard theo khu vực)
+        scores_matrix: np.ndarray = emb_matrix @ cache.embeddings.T
 
-        best_indices = np.argmax(scores_matrix, axis=1)   # (M,)
-        best_scores  = np.max(scores_matrix,  axis=1)     # (M,)
+        best_indices: np.ndarray = np.argmax(scores_matrix, axis=1)  # shape (M,)
+        best_scores:  np.ndarray = np.max(scores_matrix,  axis=1)    # shape (M,)
 
-        # ── Bước 3: One-to-one assignment — chống nhầm khi 2 mặt cùng match 1 người ──
-        # Với mỗi student_id được chọn, chỉ khuôn mặt có score cao nhất được giữ;
-        # những khuôn mặt còn lại của cùng student_id bị đánh dấu unknown.
-        M = len(valid_pairs)
-        assigned_face_for_student: dict[int, int] = {}  # student_cache_idx → face_local_idx
+        # ── Bước 2b: Tính second-best score để kiểm tra Margin ───────────────
+        # Mục đích: nếu best và second_best xấp xỉ nhau → hệ thống đang "bối rối"
+        # → từ chối nhận diện dù đã vượt threshold (chặn False Positive).
+        #
+        # Dùng np.partition thay vì sort toàn bộ → O(N) thay vì O(N log N).
+        # Nếu cache chỉ có 1 người → không có second → margin không áp dụng.
+        N: int = cache.embeddings.shape[0]
+        if N >= 2:
+            # partition(-2) đưa phần tử lớn thứ 2 (0-indexed) lên vị trí -2
+            second_best_scores: np.ndarray = np.partition(scores_matrix, -2, axis=1)[:, -2]
+            # margin[i] = khoảng cách giữa best và runner-up cho face thứ i
+            margins: np.ndarray = best_scores - second_best_scores   # shape (M,)
+        else:
+            # Chỉ 1 người trong cache → không có cơ sở so sánh → margin = ∞
+            margins = np.full(len(embeddings_list), np.inf, dtype=np.float32)
+
+        margin_threshold: float = getattr(ai_config, "recognition_margin", 0.08)
+
+        # ── Bước 3: One-to-one assignment + Margin Gate ──────────────────────
+        # Điều kiện để 1 face được xét nhận diện (PHẢI THỎA CẢ HAI):
+        #   (a) best_score >= recognition_threshold
+        #   (b) margin >= recognition_margin  ← kiểm tra chéo mới
+        # Khuôn mặt không thỏa → "Người Lạ".
+        M: int = len(valid_pairs)
+        assigned_face_for_student: dict[int, int] = {}  # student_cache_idx → local_i
 
         for local_i in range(M):
-            score = float(best_scores[local_i])
-            if score < ai_config.recognition_threshold:
-                continue  # Dưới ngưỡng, xử lý ở bước 4
+            score: float  = float(best_scores[local_i])
+            margin: float = float(margins[local_i])
 
-            student_cache_idx = int(best_indices[local_i])
+            # Cổng kép: threshold + margin
+            if score < ai_config.recognition_threshold:
+                continue  # Dưới ngưỡng tuyệt đối → bỏ qua
+            if margin < margin_threshold:
+                # Hệ thống đang bối rối (2 ứng viên quá gần nhau) → từ chối
+                logger.debug(
+                    f"Margin quá nhỏ ({margin:.3f} < {margin_threshold}) "
+                    f"— từ chối nhận diện (score={score:.3f}). Gán Unknown."
+                )
+                continue
+
+            student_cache_idx: int = int(best_indices[local_i])
             if student_cache_idx not in assigned_face_for_student:
-                # Học sinh này chưa được gán → gán cho khuôn mặt hiện tại
                 assigned_face_for_student[student_cache_idx] = local_i
             else:
-                # Học sinh này đã được gán → so sánh score, giữ score cao hơn
-                prev_local_i = assigned_face_for_student[student_cache_idx]
+                # Đã có face tranh giành student này — giữ face có score cao hơn
+                prev_local_i: int = assigned_face_for_student[student_cache_idx]
                 if score > float(best_scores[prev_local_i]):
                     assigned_face_for_student[student_cache_idx] = local_i
 
-        # ── Bước 4: Xây dựng kết quả theo đúng thứ tự gốc ────────────────────
-        # Tập hợp các local_i đã được "giành" bở one-to-one assignment
-        winning_local_indices = set(assigned_face_for_student.values())
+        # ── Bước 4: Xây dựng RecognitionResult theo thứ tự gốc ──────────────
+        winning_local_indices: set[int] = set(assigned_face_for_student.values())
 
         for local_i, (orig_idx, face) in enumerate(valid_pairs):
-            student_cache_idx = int(best_indices[local_i])
-            best_score = float(best_scores[local_i])
+            student_cache_idx: int = int(best_indices[local_i])
+            best_score: float      = float(best_scores[local_i])
+            margin: float          = float(margins[local_i])
 
-            is_above_threshold = best_score >= ai_config.recognition_threshold
-            is_winner = local_i in winning_local_indices
+            is_above_threshold: bool = best_score >= ai_config.recognition_threshold
+            is_margin_ok: bool       = margin >= margin_threshold
+            is_winner: bool          = local_i in winning_local_indices
 
-            if is_above_threshold and is_winner:
-                cid = cache.class_ids[student_cache_idx] if cache.class_ids else None
-                cname = cache.class_names[student_cache_idx] if cache.class_names else None
-                ccode = cache.class_codes[student_cache_idx] if cache.class_codes else None
+            if is_above_threshold and is_margin_ok and is_winner:
                 result_map[orig_idx] = RecognitionResult(
                     bbox=face.bbox,
                     det_score=face.det_score,
@@ -385,18 +431,19 @@ class FaceEngine:
                     student_id=cache.student_ids[student_cache_idx],
                     student_code=cache.student_codes[student_cache_idx],
                     full_name=cache.full_names[student_cache_idx],
-                    class_id=cid,
-                    class_name=cname,
-                    class_code=ccode,
+                    class_id=cache.class_ids[student_cache_idx]   if cache.class_ids   else None,
+                    class_name=cache.class_names[student_cache_idx] if cache.class_names else None,
+                    class_code=cache.class_codes[student_cache_idx] if cache.class_codes else None,
                     similarity=best_score,
                 )
             else:
-                # Dưới ngưỡng, hoặc thua trong one-to-one assignment
+                # Dưới ngưỡng, margin quá nhỏ, hoặc thua one-to-one
                 result_map[orig_idx] = RecognitionResult(
                     bbox=face.bbox,
                     det_score=face.det_score,
                     recognized=False,
-                    student_id=None, student_code=None, full_name=None, class_id=None, class_name=None, class_code=None,
+                    student_id=None, student_code=None, full_name=None,
+                    class_id=None, class_name=None, class_code=None,
                     similarity=best_score,
                 )
 
@@ -507,7 +554,26 @@ class FaceEngine:
                         # Ta không retry ở đây mà chuyển sang ảnh tiếp theo
                         if attempt == 0:
                             logger.warning(f"⚠️ AI 'mù' - Không tìm thấy khuôn mặt trong ảnh {i+1}")
-                        break 
+                        break
+
+                    # ── TASK 3: Từ chối ảnh có nhiều hơn 1 khuôn mặt ─────────────
+                    # Lý do: Nếu background có người khác, tự động chọn "mặt lớn nhất"
+                    # có thể vô tình trích xuất embedding của người lạ → làm bẩn Database
+                    # → gây False Positive khi nhận diện sau này.
+                    # Giải pháp: Yêu cầu người dùng chụp lại ảnh chỉ có 1 mặt rõ ràng.
+                    if len(faces) > 1:
+                        face_count = len(faces)
+                        logger.warning(
+                            f"🚫 Ảnh {i+1}: Phát hiện {face_count} khuôn mặt — "
+                            f"Từ chối để bảo vệ độ sạch Database. "
+                            f"Yêu cầu chụp lại với CHỈ 1 khuôn mặt trong khung hình."
+                        )
+                        # Raise để vòng lặp ngoài bỏ qua ảnh này (không ghi embedding)
+                        raise ValueError(
+                            f"MULTI_FACE: Ảnh {i+1} chứa {face_count} khuôn mặt. "
+                            f"Chỉ chấp nhận ảnh có đúng 1 khuôn mặt."
+                        )
+                    # ─────────────────────────────────────────────────────────────
 
                     # Scale bbox + landmarks trở về kích thước ảnh GỐC để crop chính xác
                     if scale < 1.0:
@@ -542,9 +608,13 @@ class FaceEngine:
                         logger.error(f"🚨 Lỗi CUDA OOM tại ảnh {i+1}, đang thử lại sau 0.5s...")
                         time.sleep(0.5)
                         continue
+                    elif err_msg.startswith("MULTI_FACE:"):
+                        # Ảnh bị từ chối vì có nhiều khuôn mặt — không phải lỗi hệ thống
+                        # Đã log warning ở trên, chỉ cần break (bỏ qua ảnh, không retry)
+                        break
                     else:
                         logger.error(f"❌ VĂNG LỖI TẠI ẢNH {i+1}: {e}")
-                        break # Thoát khỏi retry nếu lỗi khác hoặc đã retry rồi
+                        break  # Thoát khỏi retry nếu lỗi khác hoặc đã retry rồi
 
         if not embeddings: 
             logger.error("❌ KẾT LUẬN: Không có embedding nào được lấy ra từ 15 ảnh!")
